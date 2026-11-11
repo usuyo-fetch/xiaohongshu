@@ -36,7 +36,7 @@ impl Site {
                 .to_vec(),
             media: vec!["*.xhscdn.com".into()],
             media_https: true,
-            policy: Policy::strict(),
+            policy: Policy::from_host(),
         }
     }
 
