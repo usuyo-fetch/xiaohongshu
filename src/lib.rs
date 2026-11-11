@@ -1,0 +1,17 @@
+//! usuyo 的小红书获取插件：按你存过的笔记链接取公开笔记页，存成个人备份。
+//!
+//! - [`link`]：认链接、展开短链（`canonicalize`）。
+//! - [`fetch`]：取一篇笔记，写进输出目录。
+//! - [`state`]：笔记页状态对象的形状，页面改版只改这里。
+//! - [`Site`]：能连哪些主机；正式运行只用 [`Site::xiaohongshu`]。
+
+mod error;
+pub mod fetch;
+mod http;
+pub mod link;
+mod site;
+pub mod state;
+
+pub use error::{Error, Lang, VISITOR_COOKIE_KEY};
+pub use http::VisitorCookie;
+pub use site::Site;

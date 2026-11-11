@@ -1,0 +1,49 @@
+# 小红书获取插件（设计见 usuyo 仓库 docs/research/15-fetch-design-xhs-sph-bili.md §2）。
+# 只按你交来的笔记链接取公开笔记页，不登录、不签名；清单由 userscript/ 里的脚本在你的浏览器里交给 usuyo。
+protocol: 1
+id: usuyo-fetch/xiaohongshu
+kind: fetch
+name: 小红书
+description: 按你存过的笔记链接取公开笔记页的正文、图片和视频，做个人备份
+version: 0.1.0
+license: MIT
+maintainers: [fldicoahkiin]
+upstream:
+  - name: xhs-vault
+    url: https://github.com/wkwunju/xhs-vault
+    license: MIT
+platforms: [xiaohongshu]
+match:
+  - "www.xiaohongshu.com/explore/*"
+  - "www.xiaohongshu.com/search_result/*"
+  - "www.xiaohongshu.com/discovery/item/*"
+  - "www.xiaohongshu.com/user/profile/*"
+  - "xhslink.com/*"
+  - "xhslink.cn/*"
+access: public-web
+login: none
+capabilities:
+  fetch:
+    access: public-web
+    login: none
+    outputs: [text, images, media:video, meta]
+pacing:
+  xiaohongshu: {batch: true, interval: 15s, daily: 100}
+# 访客 cookie 不是平台账号：协议还没有「不是账号的 cookie」这一类（设计 §1 第 3 条），
+# 先按 §2.11 做成插件自己的密钥设置，经 USUYO_SECRETS 传入，和 login 无关。
+settings:
+  - key: visitor-cookie
+    label: 访客 cookie（可选，不是你的账号）：在一个从没登录过小红书的浏览器里打开任意一篇笔记，复制请求头里 Cookie 后面的那一行
+    type: string
+    secret: true
+permissions:
+  fs:
+    write: ["${OUT}"]
+  network:
+    mode: allowlist
+    hosts: ["www.xiaohongshu.com", "xhslink.com", "xhslink.cn", "*.xhscdn.com"]
+  env: []
+  devices: []
+  gpu: false
+run:
+  command: ["${PLUGIN_DIR}/usuyo-fetch-xiaohongshu"]
