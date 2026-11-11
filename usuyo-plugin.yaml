@@ -22,20 +22,19 @@ match:
   - "xhslink.cn/*"
 access: public-web
 login: none
+# 访客身份不是账号：usuyo 开一次首页、不登录，存下页面自己生成的 cookie，经 USUYO_VISITOR 交给笔记页请求。
+visitors:
+  - site: www.xiaohongshu.com
+    name: 小红书
+    url: https://www.xiaohongshu.com/
 capabilities:
   fetch:
     access: public-web
     login: none
+    visitors: [www.xiaohongshu.com]
     outputs: [text, images, media:video, meta]
 pacing:
   xiaohongshu: {batch: true, interval: 15s, daily: 100}
-# 访客 cookie 不是平台账号：协议还没有「不是账号的 cookie」这一类（设计 §1 第 3 条），
-# 先按 §2.11 做成插件自己的密钥设置，经 USUYO_SECRETS 传入，和 login 无关。
-settings:
-  - key: visitor-cookie
-    label: 访客 cookie（可选，不是你的账号）：在一个从没登录过小红书的浏览器里打开任意一篇笔记，复制请求头里 Cookie 后面的那一行
-    type: string
-    secret: true
 permissions:
   fs:
     write: ["${OUT}"]

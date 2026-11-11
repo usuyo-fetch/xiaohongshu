@@ -1,11 +1,8 @@
 //! 这个插件会失败的几种方式，和它们对应的协议错误码（协议 §3.3）。
 
-use usuyo_plugin_kit::protocol::{CallFailure, ErrorCode, Need, NotFoundReason};
+use usuyo_plugin_kit::protocol::{CallFailure, ErrorCode, NotFoundReason};
 
 use crate::state::StateError;
-
-/// 设置里访客 cookie 的 key，和清单 `settings` 一致。
-pub const VISITOR_COOKIE_KEY: &str = "visitor-cookie";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -34,8 +31,9 @@ pub enum Error {
     State(#[from] StateError),
     #[error("network: {0}")]
     Network(String),
-    #[error("visitor cookie setting is not usable: {0}")]
-    BadCookie(String),
+    /// 宿主交来的访客身份文件读不了或形状不对（宿主写的，不是你填的）。
+    #[error("{0}")]
+    Visitor(String),
     #[error("{0}")]
     Internal(String),
     #[error("write output: {0}")]
@@ -90,13 +88,13 @@ impl Error {
                 ErrorCode::LoginRequired,
                 Some(if *cookie_tried {
                     lang.pick(
-                        "带上访客 cookie 也被送回了首页，访客 cookie 可能过期了：请在插件设置里换一份新的",
-                        "Even with the visitor cookie the page sent us home; the visitor cookie may have expired, paste a fresh one in the plugin settings",
+                        "带上访客身份也被送回了首页，访客身份可能过期了：在「获取插件」页的小红书下面换一份",
+                        "Even with the visitor identity the page sent us home; it may have expired: take a fresh one on the fetch plugins page",
                     )
                 } else {
                     lang.pick(
-                        "这篇笔记不带 cookie 取不到：请在插件设置里填访客 cookie（不是你的账号）",
-                        "This note needs a visitor cookie: paste one in the plugin settings (it is not your account)",
+                        "这篇笔记不带访客身份取不到：在「获取插件」页的小红书下面取一份访客身份（不是你的账号）",
+                        "This note needs a visitor identity: take one on the fetch plugins page (it is not your account)",
                     )
                 }),
             ),
@@ -119,20 +117,9 @@ impl Error {
                 )),
             ),
             Error::Network(_) => with(ErrorCode::Network, None),
-            Error::BadCookie(_) => CallFailure {
-                needs: vec![
-                    Need::try_from(format!("setting:{VISITOR_COOKIE_KEY}"))
-                        .expect("constant need"),
-                ],
-                ..with(
-                    ErrorCode::DependencyMissing,
-                    Some(lang.pick(
-                        "访客 cookie 的格式不对：请粘贴浏览器请求头里 Cookie: 后面的那一整行",
-                        "The visitor cookie is malformed: paste the whole value after `Cookie:` from a request header",
-                    )),
-                )
-            },
-            Error::Internal(_) | Error::Io(_) => with(ErrorCode::Internal, None),
+            Error::Visitor(_) | Error::Internal(_) | Error::Io(_) => {
+                with(ErrorCode::Internal, None)
+            }
         }
     }
 }

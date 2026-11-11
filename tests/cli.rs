@@ -9,7 +9,7 @@ use usuyo_plugin::protocol::{Canonicalized, PluginManifest};
 const ID: &str = "671234567890abcdef012345";
 const DEAD_PROXY: &str = "http://127.0.0.1:9";
 
-fn plugin(args: &[&str], secrets: Option<&Path>) -> Output {
+fn plugin(args: &[&str], visitor: Option<&Path>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_usuyo-fetch-xiaohongshu"));
     cmd.env_clear()
         .env("USUYO_PROTOCOL", "1")
@@ -18,8 +18,8 @@ fn plugin(args: &[&str], secrets: Option<&Path>) -> Output {
         .env("HTTPS_PROXY", DEAD_PROXY)
         .env("ALL_PROXY", DEAD_PROXY)
         .args(args);
-    if let Some(s) = secrets {
-        cmd.env("USUYO_SECRETS", s);
+    if let Some(v) = visitor {
+        cmd.env("USUYO_VISITOR", v);
     }
     cmd.output().unwrap()
 }
@@ -100,54 +100,59 @@ fn fetch_without_xsec_token_answers_without_network() {
     assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
 }
 
+/// 宿主交来的访客身份文件（`USUYO_VISITOR`，和 `USUYO_CREDENTIALS` 一个形状）。
+fn visitor_file(dir: &Path, value: &str) -> PathBuf {
+    let path = dir.join("visitor.json");
+    let file = serde_json::json!({
+        "sites": [{"site": "www.xiaohongshu.com", "source": "visitor-window"}],
+        "storageState": {"cookies": [
+            {"name": "a1", "value": value, "domain": ".xiaohongshu.com", "path": "/"}]}
+    });
+    std::fs::write(&path, file.to_string()).unwrap();
+    path
+}
+
 #[test]
-fn a_malformed_visitor_cookie_is_reported_before_any_request() {
+fn a_malformed_visitor_identity_is_reported_before_any_request() {
     let dir = tempfile::tempdir().unwrap();
-    let secrets = dir.path().join("secrets.json");
-    std::fs::write(&secrets, r#"{"visitor-cookie": "a1=x\r\nHost: evil"}"#).unwrap();
+    let visitor = visitor_file(dir.path(), "visitor-secret-1\r\nHost: evil");
     let out_dir = dir.path().join("out");
     std::fs::create_dir(&out_dir).unwrap();
     let input = format!("https://www.xiaohongshu.com/explore/{ID}?xsec_token=x");
     let out = plugin(
         &["fetch", &input, "--out", out_dir.to_str().unwrap()],
-        Some(&secrets),
+        Some(&visitor),
     );
     let value = envelope(&out);
-    assert_eq!(value["error"]["code"], "dependency-missing");
-    assert_eq!(value["error"]["needs"][0], "setting:visitor-cookie");
+    assert_eq!(value["error"]["code"], "internal");
+    let text = format!("{value} {}", String::from_utf8_lossy(&out.stderr));
+    assert!(!text.contains("visitor-secret-1"), "{text}");
+    assert!(std::fs::read_dir(&out_dir).unwrap().next().is_none());
+
+    // 形状对的访客身份读得进来，没有 xsec_token 的链接照样不联网就答
+    let visitor = visitor_file(dir.path(), "visitor-secret-1");
+    let input = format!("https://www.xiaohongshu.com/explore/{ID}");
+    let out = plugin(
+        &["fetch", &input, "--out", out_dir.to_str().unwrap()],
+        Some(&visitor),
+    );
+    assert_eq!(envelope(&out)["error"]["code"], "not-found");
 }
 
 #[test]
-fn health_reads_only_local_settings() {
+fn health_answers_without_requests() {
     let m = manifest();
-    let dir = tempfile::tempdir().unwrap();
     let out = plugin(&["health"], None);
     let value = envelope(&out);
     assert_eq!(value["ok"], true);
     assert_eq!(value["ready"], true);
     assert_eq!(value["protocol"], 1);
     assert_eq!(value["version"], m.header.version.to_string());
-    assert_eq!(value["checks"][0]["name"], "visitor-cookie");
+    assert_eq!(value["checks"], serde_json::json!([]));
 
-    let secrets = dir.path().join("secrets.json");
-    std::fs::write(
-        &secrets,
-        r#"{"visitor-cookie": "a1=x; web_session=secret-value"}"#,
-    )
-    .unwrap();
-    let out = plugin(&["health", "--probe"], Some(&secrets));
-    let text = String::from_utf8(out.stdout.clone()).unwrap();
-    assert!(!text.contains("secret-value"));
-    let value = envelope(&out);
+    let value = envelope(&plugin(&["health", "--probe"], None));
     assert_eq!(value["ready"], true);
-    assert_eq!(value["checks"][0]["message"], "填了访客 cookie");
-    assert_eq!(value["checks"][1]["name"], "probe");
-
-    std::fs::write(&secrets, r#"{"visitor-cookie": "no-equals-sign"}"#).unwrap();
-    assert_eq!(
-        envelope(&plugin(&["health"], Some(&secrets)))["ready"],
-        false
-    );
+    assert_eq!(value["checks"][0]["name"], "probe");
 }
 
 #[test]
@@ -182,6 +187,13 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let found = usuyo_plugin::discover(&tmp.path().join("plugins")).unwrap();
     assert!(found.rejected.is_empty(), "{:?}", found.rejected);
     assert_eq!(found.fetch.len(), 1);
+    // 访客身份写在 `visitors` 里、只给 fetch，不是账号站点，也没有手填的设置
+    let spec = &found.fetch[0].spec;
+    assert!(spec.sites.is_empty());
+    assert_eq!(spec.visitors[0].site, "www.xiaohongshu.com");
+    let fetch = spec.capabilities.fetch.as_ref().unwrap();
+    assert_eq!(fetch.uses.visitors, ["www.xiaohongshu.com"]);
+    assert!(found.fetch[0].header.settings.is_empty());
     let host = usuyo_plugin::PluginHost::new(
         usuyo_plugin::HostConfig {
             work_dir: tmp.path().join("work"),

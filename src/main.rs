@@ -1,19 +1,15 @@
 //! 小红书获取插件的入口。子命令照协议 §3.2：`canonicalize`、`fetch`、`health`。
 
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::Context;
 use serde::Serialize;
 use usuyo_fetch_xiaohongshu::fetch::{self, Request};
-use usuyo_fetch_xiaohongshu::{Error, Lang, Site, VISITOR_COOKIE_KEY, VisitorCookie, link};
+use usuyo_fetch_xiaohongshu::{Error, Lang, Site, link, visitor_cookie};
 use usuyo_plugin_kit::protocol::{CallFailure, Envelope, ErrorCode, OutputKind};
 
 const USAGE: &str = "usage: usuyo-fetch-xiaohongshu canonicalize <url> | fetch <url> --out <dir> [--want a,b] | health [--probe]";
-/// 密钥文件只有一个小 JSON，超过这个大小就不是宿主写的。
-const SECRETS_BYTES: u64 = 64 << 10;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -99,7 +95,7 @@ fn run_fetch(
         ))
         .into());
     }
-    let cookie = visitor_cookie()?;
+    let cookie = visitor_cookie(site)?;
     Ok(fetch::fetch(
         site,
         Request {
@@ -109,27 +105,6 @@ fn run_fetch(
             visitor_cookie: cookie.as_ref(),
         },
     )?)
-}
-
-/// 设置里的访客 cookie，经 `USUYO_SECRETS` 传入（协议 §2.11、§3.2）。没填时是 `None`。
-fn visitor_cookie() -> anyhow::Result<Option<VisitorCookie>> {
-    let Some(path) = std::env::var_os("USUYO_SECRETS") else {
-        return Ok(None);
-    };
-    let mut text = String::new();
-    std::fs::File::open(&path)
-        .context("open USUYO_SECRETS")?
-        .take(SECRETS_BYTES)
-        .read_to_string(&mut text)
-        .context("read USUYO_SECRETS")?;
-    let secrets: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&text).context("USUYO_SECRETS is not a JSON object")?;
-    match secrets.get(VISITOR_COOKIE_KEY) {
-        None => Ok(None),
-        Some(serde_json::Value::String(raw)) if raw.trim().is_empty() => Ok(None),
-        Some(serde_json::Value::String(raw)) => Ok(Some(VisitorCookie::parse(raw)?)),
-        Some(_) => Err(Error::BadCookie("the setting is not a string".into()).into()),
-    }
 }
 
 #[derive(Serialize)]
@@ -149,26 +124,9 @@ struct Check {
     message: String,
 }
 
-/// 不发请求，只看本机的设置（协议 §3.10）。
+/// 不发请求，也没有本机设置要看（协议 §3.10）；访客身份由宿主看着。
 fn health(probe: bool) -> anyhow::Result<Health> {
-    let cookie = match visitor_cookie() {
-        Ok(Some(_)) => Check {
-            name: VISITOR_COOKIE_KEY,
-            ok: true,
-            message: "填了访客 cookie".into(),
-        },
-        Ok(None) => Check {
-            name: VISITOR_COOKIE_KEY,
-            ok: true,
-            message: "没填访客 cookie（可选）：有的笔记不带它取不到".into(),
-        },
-        Err(e) => Check {
-            name: VISITOR_COOKIE_KEY,
-            ok: false,
-            message: format!("访客 cookie 用不了：{e:#}"),
-        },
-    };
-    let mut checks = vec![cookie];
+    let mut checks = Vec::new();
     if probe {
         checks.push(Check {
             name: "probe",

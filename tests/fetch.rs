@@ -9,11 +9,12 @@ use std::path::Path;
 use common::{COOKIE, Fake, ID, JPEG, MP4, WEBP};
 use tempfile::TempDir;
 use usuyo_fetch_xiaohongshu::fetch::{self, Request};
-use usuyo_fetch_xiaohongshu::{Error, Lang, VisitorCookie, link};
+use usuyo_fetch_xiaohongshu::{Error, Lang, link};
 use usuyo_plugin::protocol::{
     Canonicalized, Completeness, ErrorCode, FetchOutput, Identity, ItemKind, MediaKind,
     NotFoundReason, OutputKind,
 };
+use usuyo_plugin_kit::http::Cookie;
 
 struct Got {
     result: Result<FetchOutput, Error>,
@@ -22,7 +23,8 @@ struct Got {
 
 fn run(fake: &Fake, input: &str, cookie: Option<&str>, want: Option<&[OutputKind]>) -> Got {
     let dir = tempfile::tempdir().unwrap();
-    let cookie = cookie.map(|c| VisitorCookie::parse(c).unwrap());
+    let host = url::Url::parse(&fake.web).unwrap();
+    let cookie = cookie.map(|c| Cookie::new(c, [host.host_str().unwrap()]));
     let result = fetch::fetch(
         &fake.site(),
         Request {
@@ -319,7 +321,7 @@ fn without_a_cookie_home_means_login_required() {
     let fake = Fake::start();
     let f = failure(&run(&fake, &fake.note_url("needcookie"), None, None));
     assert_eq!(f.code, ErrorCode::LoginRequired);
-    assert!(f.hint.as_deref().unwrap().contains("访客 cookie"), "{f:?}");
+    assert!(f.hint.as_deref().unwrap().contains("访客身份"), "{f:?}");
     assert_eq!(fake.page_requests().len(), 1);
 }
 
@@ -491,5 +493,5 @@ fn english_hints_follow_the_locale() {
     let fake = Fake::start();
     let got = run(&fake, &fake.note_url("needcookie"), None, None);
     let hint = got.result.unwrap_err().to_failure(Lang::En).hint.unwrap();
-    assert!(hint.contains("visitor cookie"), "{hint}");
+    assert!(hint.contains("visitor identity"), "{hint}");
 }

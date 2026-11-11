@@ -9,13 +9,14 @@ use std::time::Duration;
 
 use serde_json::json;
 use url::Url;
+use usuyo_plugin_kit::http::Cookie;
 use usuyo_plugin_kit::protocol::{
     Access, Author, Completeness, Evidence, FetchOutput, ItemKind, Media, MediaKind, OutputKind,
     PluginEvent, RelPath, Rfc3339, TextFormat,
 };
 
 use crate::error::Error;
-use crate::http::{self, Http, Purpose, VisitorCookie};
+use crate::http::{self, Http, Purpose};
 use crate::link::{self, Link, NoteLink};
 use crate::site::{CANONICAL_ORIGIN, Site};
 use crate::state::{self, Note, NoteKind, StateError, Stream};
@@ -50,7 +51,8 @@ pub struct Request<'a> {
     pub out: &'a Path,
     /// `None` 是全要。
     pub want: Option<BTreeSet<OutputKind>>,
-    pub visitor_cookie: Option<&'a VisitorCookie>,
+    /// 宿主交来的访客身份，见 [`crate::visitor_cookie`]。
+    pub visitor_cookie: Option<&'a Cookie>,
 }
 
 pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
@@ -118,11 +120,7 @@ struct Page {
 
 /// 请求一次笔记页（加上最多几跳指向同一篇笔记的重定向），认出拿到的是什么。
 /// 指向首页、登录页、验证页、404 页的重定向只看地址，不去请求。
-fn load_page(
-    http: &Http<'_>,
-    note: &NoteLink,
-    cookie: Option<&VisitorCookie>,
-) -> Result<Page, Error> {
+fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Result<Page, Error> {
     let mut at = note.page_url(http.site());
     for _ in 0..PAGE_HOPS {
         let mut response = http.get(&at, Purpose::Page { cookie }, PAGE_TIMEOUT)?;

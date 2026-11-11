@@ -19,46 +19,9 @@ const ACCEPT_MEDIA: &str = "*/*";
 /// 整次调用最多读这么多字节：笔记页、图片、视频、实况图加起来。
 const CALL_BYTES: u64 = 4 << 30;
 
-/// 访客 cookie：浏览器请求头里 `Cookie:` 后面的那一行。不打印、不写盘。
-#[derive(Clone)]
-pub struct VisitorCookie(String);
-
-impl VisitorCookie {
-    pub fn parse(raw: &str) -> Result<Self, Error> {
-        let value = raw.trim();
-        let value = value
-            .strip_prefix("Cookie:")
-            .or_else(|| value.strip_prefix("cookie:"))
-            .unwrap_or(value)
-            .trim();
-        if value.is_empty() || value.len() > 8192 {
-            return Err(Error::BadCookie("empty or longer than 8 KiB".into()));
-        }
-        if !value.bytes().all(|b| (0x20..0x7f).contains(&b)) {
-            return Err(Error::BadCookie(
-                "only printable ASCII on one line is allowed".into(),
-            ));
-        }
-        let pairs_ok = value
-            .split(';')
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .all(|p| p.split_once('=').is_some_and(|(k, _)| !k.trim().is_empty()));
-        if !pairs_ok {
-            return Err(Error::BadCookie("expected `name=value; name=value`".into()));
-        }
-        Ok(Self(value.to_owned()))
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for VisitorCookie {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("VisitorCookie(<redacted>)")
-    }
+/// 宿主交来的访客身份（`USUYO_VISITOR`），只发给笔记页的主机、只走 https。没交时是 `None`。
+pub fn visitor_cookie(site: &Site) -> Result<Option<Cookie>, Error> {
+    Cookie::visitor(site.web_hosts()).map_err(|e| Error::Visitor(e.to_string()))
 }
 
 pub(crate) struct Http<'s> {
@@ -145,9 +108,9 @@ impl<'s> Http<'s> {
             .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
             .timeout(timeout.min(left));
         match purpose {
-            // 访客 cookie 只给笔记页的主机
+            // 访客身份只给笔记页的主机（Cookie 自己也只认那几个主机）
             Purpose::Page { cookie: Some(c) } => {
-                request = request.cookie(&Cookie::new(c.as_str(), self.site.web_hosts()));
+                request = request.cookie(c);
             }
             // 浏览器从笔记页取图时只带源，不带路径和 xsec_token
             Purpose::Image | Purpose::Video => {
@@ -199,7 +162,7 @@ pub(crate) const BYTES_SPENT: &str = "the call's byte budget is used up";
 pub(crate) enum Purpose<'c> {
     /// 笔记页；只有这里能带访客 cookie。
     Page {
-        cookie: Option<&'c VisitorCookie>,
+        cookie: Option<&'c Cookie>,
     },
     /// 展开短链，不带任何 cookie。
     Short,
@@ -240,17 +203,6 @@ mod tests {
     use usuyo_plugin_kit::http::Policy;
 
     use super::*;
-
-    #[test]
-    fn cookie_lines() {
-        assert!(VisitorCookie::parse("a1=x; webId=y; web_session=z").is_ok());
-        assert!(VisitorCookie::parse("Cookie: a1=x").is_ok());
-        for bad in ["", "   ", "a1=x\r\nHost: evil", "novalue", "=x", "a1=中文"] {
-            assert!(VisitorCookie::parse(bad).is_err(), "{bad:?}");
-        }
-        let c = VisitorCookie::parse("a1=secret").unwrap();
-        assert!(!format!("{c:?}").contains("secret"));
-    }
 
     /// 本机服务：`/to/<地址>` 回 302 到那个地址；记下连进来几次。
     fn serve() -> (String, Arc<AtomicUsize>) {
@@ -304,7 +256,7 @@ mod tests {
         let port = elsewhere.rsplit(':').next().unwrap();
         let site = Site::loopback(&web, &web, local_policy()).unwrap();
         let http = Http::new(&site, Duration::from_secs(10));
-        let cookie = VisitorCookie::parse("a1=secret").unwrap();
+        let cookie = Cookie::new("a1=secret", site.web_hosts());
         for target in [
             format!("http://localhost:{port}/x.jpg"),
             format!("http://127.0.0.2:{port}/x.jpg"),

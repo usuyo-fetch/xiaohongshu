@@ -12,6 +12,6 @@ pub mod link;
 mod site;
 pub mod state;
 
-pub use error::{Error, Lang, VISITOR_COOKIE_KEY};
-pub use http::VisitorCookie;
+pub use error::{Error, Lang};
+pub use http::visitor_cookie;
 pub use site::Site;
