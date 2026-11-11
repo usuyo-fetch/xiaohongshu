@@ -17,7 +17,7 @@ pub struct Site {
     short: Vec<Url>,
     /// 图片、视频的主机：`*.` 开头的按后缀匹配子域，其余按整个主机名匹配。
     media: Vec<String>,
-    /// 页面给的 `http://` 图片视频地址改走 `https://`。
+    /// 页面给的 `http://` 图片视频地址改走 `https://`，带端口的不取。
     media_https: bool,
     /// 地址策略：正式运行只连公网地址。
     policy: Policy,
@@ -108,11 +108,16 @@ impl Site {
             })
     }
 
-    /// 页面给的图片视频地址：只认名单里的主机，正式运行时升到 https。
+    /// 页面给的图片视频地址：只认名单里的主机，正式运行时升到 https、只走默认端口。
     pub(crate) fn media_url(&self, raw: &str) -> Option<Url> {
         let mut url = Url::parse(raw.trim()).ok()?;
-        if self.media_https && url.scheme() == "http" {
-            url.set_scheme("https").ok()?;
+        if self.media_https {
+            if url.port().is_some() {
+                return None;
+            }
+            if url.scheme() == "http" {
+                url.set_scheme("https").ok()?;
+            }
         }
         self.is_media(&url).then_some(url)
     }
@@ -155,6 +160,19 @@ mod tests {
             "https"
         );
         assert!(site.media_url("https://example.com/a.jpg").is_none());
+        // 图片视频只走默认端口
+        assert!(
+            site.media_url("https://sns-webpic-qc.xhscdn.com:8443/a")
+                .is_none()
+        );
+        assert!(
+            site.media_url("http://sns-video-bd.xhscdn.com:8080/v.mp4")
+                .is_none()
+        );
+        assert!(
+            site.media_url("http://sns-video-bd.xhscdn.com:80/v.mp4")
+                .is_some()
+        );
     }
 
     #[test]

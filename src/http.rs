@@ -1,7 +1,8 @@
 //! 发请求的唯一入口：主机先过 [`Site::may_request`]，再经 `usuyo_plugin_kit::http`
 //! 按用途只连那一类主机、只连公网地址。重定向一律不自动跟，
-//! cookie 只发给笔记页的主机，每个请求都有超时，整次调用有总时限。
+//! cookie 只发给笔记页的主机，每个请求都有超时，整次调用有总时限和总字节数。
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -15,6 +16,8 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 const ACCEPT_HTML: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
 const ACCEPT_IMAGE: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
 const ACCEPT_MEDIA: &str = "*/*";
+/// 整次调用最多读这么多字节：笔记页、图片、视频、实况图加起来。
+const CALL_BYTES: u64 = 4 << 30;
 
 /// 访客 cookie：浏览器请求头里 `Cookie:` 后面的那一行。不打印、不写盘。
 #[derive(Clone)]
@@ -65,6 +68,8 @@ pub(crate) struct Http<'s> {
     short: Client,
     media: Client,
     deadline: Instant,
+    /// 整次调用还能读多少字节，图片和视频一起算。
+    bytes_left: Cell<u64>,
 }
 
 impl<'s> Http<'s> {
@@ -79,7 +84,15 @@ impl<'s> Http<'s> {
             short: client(site.short_hosts()),
             media: client(site.media_hosts()),
             deadline: Instant::now() + budget,
+            bytes_left: Cell::new(CALL_BYTES),
         }
+    }
+
+    /// 测试用：换一个小的字节总量。
+    #[cfg(test)]
+    pub(crate) fn with_bytes(self, bytes: u64) -> Self {
+        self.bytes_left.set(bytes);
+        self
     }
 
     pub(crate) fn site(&self) -> &Site {
@@ -113,6 +126,9 @@ impl<'s> Http<'s> {
         if left < Duration::from_secs(1) {
             return Err(Error::Network("the call's time budget is used up".into()));
         }
+        if self.bytes_left.get() == 0 {
+            return Err(Error::Network(BYTES_SPENT.into()));
+        }
         let accept = match purpose {
             Purpose::Page { .. } | Purpose::Short => ACCEPT_HTML,
             Purpose::Image => ACCEPT_IMAGE,
@@ -142,7 +158,41 @@ impl<'s> Http<'s> {
         }
         request.send().map_err(|e| Error::Network(e.to_string()))
     }
+
+    /// 一个响应最多读多少：它自己的上限和整次调用剩下的，取小的。
+    pub(crate) fn byte_cap(&self, limit: u64) -> u64 {
+        limit.min(self.bytes_left.get())
+    }
+
+    /// 从整次调用的字节总量里扣掉读过的。
+    pub(crate) fn spend(&self, bytes: u64) {
+        self.bytes_left
+            .set(self.bytes_left.get().saturating_sub(bytes));
+    }
+
+    /// 读整个响应体，超过 `limit` 字节就算失败；读过的从整次调用的总量里扣，
+    /// 读失败时不知道读了多少，按读满算。
+    pub(crate) fn read_capped(
+        &self,
+        response: &mut Response,
+        limit: u64,
+    ) -> Result<Vec<u8>, Error> {
+        let cap = self.byte_cap(limit);
+        let result = response.read_to_vec(cap);
+        self.spend(result.as_ref().map_or(cap, |b| b.len() as u64));
+        result.map_err(|e| match e {
+            usuyo_plugin_kit::http::Error::TooLarge(_) if cap < limit => {
+                Error::Network(BYTES_SPENT.into())
+            }
+            usuyo_plugin_kit::http::Error::TooLarge(_) => {
+                Error::UpstreamChanged(format!("response is larger than {limit} bytes"))
+            }
+            other => Error::Network(other.to_string()),
+        })
+    }
 }
+
+pub(crate) const BYTES_SPENT: &str = "the call's byte budget is used up";
 
 /// 一个请求是做什么的。
 #[derive(Debug, Clone, Copy)]
@@ -173,16 +223,6 @@ pub(crate) fn location(response: &Response, from: &Url) -> Result<Option<Url>, E
     from.join(raw)
         .map(Some)
         .map_err(|e| Error::UpstreamChanged(format!("bad Location `{raw}`: {e}")))
-}
-
-/// 读整个响应体，超过 `limit` 字节就算失败。
-pub(crate) fn read_capped(response: &mut Response, limit: u64) -> Result<Vec<u8>, Error> {
-    response.read_to_vec(limit).map_err(|e| match e {
-        usuyo_plugin_kit::http::Error::TooLarge(_) => {
-            Error::UpstreamChanged(format!("response is larger than {limit} bytes"))
-        }
-        other => Error::Network(other.to_string()),
-    })
 }
 
 /// `Retry-After` 只认秒数。

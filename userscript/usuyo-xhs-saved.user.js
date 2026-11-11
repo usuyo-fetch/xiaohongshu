@@ -1,24 +1,22 @@
 // ==UserScript==
 // @name         usuyo：交出小红书的收藏和赞过
 // @namespace    usuyo-fetch/xiaohongshu
-// @version      0.1.0
-// @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题；你点按钮时交给本机的 usuyo。不发额外请求、不自动滚动、不读 cookie。
+// @version      0.1.1
+// @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题。usuyo 还不能接收这份清单，这一版不往任何地方发送。不发额外请求、不自动滚动、不读 cookie。
 // @match        https://www.xiaohongshu.com/*
 // @run-at       document-start
 // @noframes
 // @grant        unsafeWindow
-// @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_registerMenuCommand
-// @connect      127.0.0.1
 // @license      MIT
 // ==/UserScript==
 
 /*
  * 改写自 wkwunju/xhs-vault 的 userscript/xhs-export.user.js（MIT）：
  * 留下了「截获页面自己发出的列表请求」这一做法；去掉了自动滚动、导出 cookies.json、
- * 写页面 localStorage，导出文件改成交给本机 usuyo 的 /v1/batches（usuyo 插件协议 §5.1、§9.4）。
+ * 写页面 localStorage。交给 usuyo 的那一步等 usuyo 有了接收清单的本机接口、
+ * 又能先确认对面是 usuyo 时再加（usuyo 插件协议 §5.1）；在那之前脚本不往外发任何东西。
  *
  * xhs-vault 的许可声明：
  *
@@ -49,7 +47,6 @@
   'use strict';
 
   const page = unsafeWindow;
-  const DEFAULT_PORT = 47821;
   // xsec_token 只在几小时内有效，记下超过这个时间的条目不再交
   const KEEP_MS = 12 * 60 * 60 * 1000;
   // 收藏页、赞过页自己请求的列表（OpenCLI 的 collection-helpers.js 记的接口名）
@@ -199,72 +196,14 @@
 
   // ---------- 交给 usuyo ----------
 
-  // 弹窗用脚本自己的 prompt，不用页面上可能被换掉的那个
-  function token() {
-    let t = GM_getValue('usuyoToken', '');
-    if (!t) {
-      t = (prompt('粘贴 usuyo 设置 › 隐私 › 本地接口里给这个脚本生成的访问令牌') || '').trim();
-      if (t) GM_setValue('usuyoToken', t);
-    }
-    return t;
-  }
+  // usuyo 现在还没有接收这份清单的本机接口，也没有办法先确认监听那个端口的就是 usuyo。
+  // 所以这一版什么都不发：不要令牌，不连本机端口，记下的条目只留在脚本管理器里。
+  // 早先版本存下的令牌和端口在这里清掉。
+  GM_setValue('usuyoToken', '');
+  GM_setValue('usuyoPort', '');
 
-  function noteUrl(id, item) {
-    return 'https://www.xiaohongshu.com/explore/' + id + '?xsec_token=' + encodeURIComponent(item.token) + '&xsec_source=pc_user';
-  }
-
-  function stamp() {
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-  }
-
-  function send(action, bearer) {
-    const ids = Object.keys(store[action]);
-    if (!ids.length) return Promise.resolve(0);
-    const body = {
-      name: '小红书' + LABEL[action] + ' ' + stamp(),
-      action,
-      links: ids.map((id) => ({ url: noteUrl(id, store[action][id]), title: store[action][id].title || undefined })),
-    };
-    const port = Number(GM_getValue('usuyoPort', DEFAULT_PORT)) || DEFAULT_PORT;
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: 'http://127.0.0.1:' + port + '/v1/batches',
-        headers: { Authorization: 'Bearer ' + bearer, 'Content-Type': 'application/json' },
-        data: JSON.stringify(body),
-        timeout: 10000,
-        onload: (r) => {
-          if (r.status === 202) {
-            for (const id of ids) delete store[action][id];
-            saveStore();
-            resolve(ids.length);
-          } else if (r.status === 401) {
-            GM_setValue('usuyoToken', '');
-            reject(new Error('令牌不对，下次点的时候重新粘贴'));
-          } else {
-            reject(new Error('usuyo 回了 HTTP ' + r.status));
-          }
-        },
-        onerror: () => reject(new Error('连不上本机的 usuyo，确认它开着')),
-        ontimeout: () => reject(new Error('usuyo 没有回应')),
-      });
-    });
-  }
-
-  async function deliver() {
-    const bearer = token();
-    if (!bearer) return;
-    status.notice = '正在交给 usuyo…';
-    render();
-    try {
-      let sent = 0;
-      for (const action of ['favorite', 'like']) sent += await send(action, bearer);
-      status.notice = sent ? '交给了 usuyo：' + sent + ' 条，在 usuyo 的导入预览里确认' : '还没有记下的条目';
-    } catch (e) {
-      status.notice = e.message;
-    }
+  function deliver() {
+    status.notice = '这一版 usuyo 还不能接收清单，什么都没有发出去；记下的条目留在这里，12 小时内有效';
     render();
   }
 
@@ -276,15 +215,6 @@
     saveStore();
     render();
   }
-
-  GM_registerMenuCommand('usuyo：重新填访问令牌', () => {
-    GM_setValue('usuyoToken', '');
-    token();
-  });
-  GM_registerMenuCommand('usuyo：改本地端口', () => {
-    const p = (prompt('usuyo 本地接口的端口', String(GM_getValue('usuyoPort', DEFAULT_PORT))) || '').trim();
-    if (/^\d{2,5}$/.test(p)) GM_setValue('usuyoPort', Number(p));
-  });
 
   // ---------- 角落里的一小块计数 ----------
 

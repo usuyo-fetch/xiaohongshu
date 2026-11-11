@@ -40,6 +40,8 @@ const IMAGES_TOTAL_BYTES: u64 = 600 << 20;
 const MAX_IMAGES: usize = 40;
 const VIDEO_TIMEOUT: Duration = Duration::from_secs(240);
 const VIDEO_BYTES: u64 = 2 << 30;
+/// 实况图的动态部分只有几秒。
+const LIVE_BYTES: u64 = 64 << 20;
 const PROGRESS_STEP: u64 = 8 << 20;
 
 pub struct Request<'a> {
@@ -151,7 +153,7 @@ fn load_page(
         let content_type = http::header(&response, "content-type")
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let body = http::read_capped(&mut response, PAGE_BYTES)?;
+        let body = http.read_capped(&mut response, PAGE_BYTES)?;
         let text = String::from_utf8_lossy(&body);
         if content_type.contains("json") || text.trim_start().starts_with('{') {
             return Err(risk_json(&text));
@@ -355,7 +357,7 @@ fn write_note(
     if wanted.contains(&OutputKind::Video) {
         match (&note.kind, &note.video) {
             (NoteKind::Video, Some(stream)) => {
-                match download_stream(http, stream, "media/video.mp4", out) {
+                match download_stream(http, stream, "media/video.mp4", out, VIDEO_BYTES) {
                     Ok((path, mime)) => {
                         video_record = json!({
                             "path": path.as_str(), "url": stream.url, "codec": stream.codec,
@@ -381,7 +383,7 @@ fn write_note(
         for (index, image) in note.images.iter().take(MAX_IMAGES).enumerate() {
             let Some(live) = &image.live else { continue };
             let name = format!("media/live-{:03}.mp4", index + 1);
-            match download_stream(http, live, &name, out) {
+            match download_stream(http, live, &name, out, LIVE_BYTES) {
                 Ok((path, mime)) => media.push(video_media(path, mime, live)),
                 Err(why) => failed.push(json!({"live": live.url, "index": index + 1, "why": why})),
             }
@@ -525,7 +527,9 @@ fn download_image(
     let ext = http::header(&response, "content-type")
         .and_then(image_extension)
         .ok_or_else(|| "不是图片".to_owned())?;
-    let bytes = http::read_capped(&mut response, IMAGE_BYTES).map_err(|e| e.to_string())?;
+    let bytes = http
+        .read_capped(&mut response, IMAGE_BYTES)
+        .map_err(|e| e.to_string())?;
     *total += bytes.len() as u64;
     if *total > IMAGES_TOTAL_BYTES {
         return Err("图片加起来超过上限".into());
@@ -555,6 +559,7 @@ fn download_stream(
     stream: &Stream,
     name: &str,
     out: &Path,
+    limit: u64,
 ) -> Result<(RelPath, String), String> {
     let mut last = String::from("没有可用的地址");
     let candidates =
@@ -564,7 +569,7 @@ fn download_stream(
             last = "视频地址不在插件的主机名单里，没有去取".into();
             continue;
         };
-        match save_stream(http, &url, name, out) {
+        match save_stream(http, &url, name, out, limit) {
             Ok(mime) => return Ok((rel(name), mime)),
             Err(why) => last = why,
         }
@@ -572,7 +577,13 @@ fn download_stream(
     Err(last)
 }
 
-fn save_stream(http: &Http<'_>, url: &Url, name: &str, out: &Path) -> Result<String, String> {
+fn save_stream(
+    http: &Http<'_>,
+    url: &Url,
+    name: &str,
+    out: &Path,
+    limit: u64,
+) -> Result<String, String> {
     let response = http
         .get(url, Purpose::Video, VIDEO_TIMEOUT)
         .map_err(|e| e.to_string())?;
@@ -594,14 +605,21 @@ fn save_stream(http: &Http<'_>, url: &Url, name: &str, out: &Path) -> Result<Str
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
+    let cap = http.byte_cap(limit);
+    let mut done = 0u64;
     let result = (|| {
-        let mut reader = response.into_reader(VIDEO_BYTES);
+        let mut reader = response.into_reader(cap);
         let mut file = File::create(&path).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 256 << 10];
-        let mut done = 0u64;
         let mut reported = 0u64;
         loop {
-            let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+            let n = reader.read(&mut buf).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::FileTooLarge && cap < limit {
+                    http::BYTES_SPENT.to_owned()
+                } else {
+                    e.to_string()
+                }
+            })?;
             if n == 0 {
                 break;
             }
@@ -618,6 +636,9 @@ fn save_stream(http: &Http<'_>, url: &Url, name: &str, out: &Path) -> Result<Str
         }
         Ok(())
     })();
+    // 超了总量时最后那一下读到的没算进 done，直接算用完
+    let over = matches!(&result, Err(why) if why == http::BYTES_SPENT);
+    http.spend(if over { cap } else { done });
     match result {
         Ok(()) => Ok(if mime == "application/octet-stream" {
             "video/mp4".into()
@@ -647,7 +668,96 @@ fn progress(done: u64, total: Option<u64>) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader};
+    use std::net::{IpAddr, TcpListener};
+
+    use usuyo_plugin_kit::http::Policy;
+
     use super::*;
+
+    const CLIP: usize = 400 << 10;
+
+    /// 本机服务：`/media/*` 回 400 KiB 的假视频，`/img/*` 回一张小 jpeg。
+    fn serve_media() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap_or(0);
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+                let (ctype, body) = if path.starts_with("/img/") {
+                    ("image/jpeg", b"\xff\xd8\xff\xe0fake".to_vec())
+                } else {
+                    let mut v = b"\0\0\0\x18ftypmp42".to_vec();
+                    v.resize(CLIP, 0);
+                    ("video/mp4", v)
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).ok();
+                stream.write_all(&body).ok();
+            }
+        });
+        base
+    }
+
+    fn local_policy() -> Policy {
+        Policy {
+            lookup: |_, _| Err(std::io::Error::other("no DNS in tests")),
+            public: |ip| ip == IpAddr::from([127, 0, 0, 1]),
+            cookies_over_http: true,
+            ..Policy::strict()
+        }
+    }
+
+    fn stream(url: String) -> Stream {
+        Stream {
+            url,
+            backup: Vec::new(),
+            codec: "h264".into(),
+            width: None,
+            height: None,
+            duration_ms: None,
+        }
+    }
+
+    /// 图片和几路视频共用整次调用的字节总量：用完以后不再下载，也不再发请求。
+    #[test]
+    fn downloads_share_the_call_byte_budget() {
+        let base = serve_media();
+        let site = Site::loopback(&base, &base, local_policy()).unwrap();
+        let http = Http::new(&site, Duration::from_secs(10)).with_bytes(1 << 20);
+        let out = tempfile::tempdir().unwrap();
+        let results: Vec<_> = (1..=3)
+            .map(|i| {
+                let name = format!("media/live-{i:03}.mp4");
+                let s = stream(format!("{base}/media/{i}.mp4"));
+                download_stream(&http, &s, &name, out.path(), VIDEO_BYTES)
+            })
+            .collect();
+        assert!(results[0].is_ok() && results[1].is_ok(), "{results:?}");
+        let why = results[2].as_ref().unwrap_err();
+        assert!(why.contains("byte budget"), "{why}");
+        let image = download_image(&http, &format!("{base}/img/a.jpg"), 1, out.path(), &mut 0);
+        assert!(image.unwrap_err().contains("byte budget"));
+
+        let written: u64 = fs::read_dir(out.path().join("media"))
+            .unwrap()
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .sum();
+        assert_eq!(written, 2 * CLIP as u64);
+    }
 
     const ID: &str = "671234567890abcdef012345";
 

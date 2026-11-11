@@ -339,6 +339,9 @@ fn image(v: &Value) -> Image {
     }
 }
 
+/// 每一路最多留几个备用地址：页面给上千个也不会变成上千个请求。
+const MAX_BACKUPS: usize = 3;
+
 /// 先 h264（哪里都能放），再 h265、av1、h266；同一编码里取最高的那一路。
 fn best_stream(streams: &Value) -> Option<Stream> {
     ["h264", "h265", "av1", "h266"]
@@ -353,6 +356,7 @@ fn best_stream(streams: &Value) -> Option<Stream> {
                         .map(|b| {
                             b.iter()
                                 .filter_map(|u| u.as_str().map(str::to_owned))
+                                .take(MAX_BACKUPS)
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -375,6 +379,17 @@ fn best_stream(streams: &Value) -> Option<Stream> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 页面给再多备用地址也只留前三个：一路视频最多连四次。
+    #[test]
+    fn backup_urls_are_capped() {
+        let backups: Vec<String> = (0..1000)
+            .map(|i| format!("https://b{i}.xhscdn.com/v.mp4"))
+            .collect();
+        let streams = serde_json::json!({"h264": [{"masterUrl": "https://a.xhscdn.com/v.mp4", "backupUrls": backups}]});
+        let s = best_stream(&streams).unwrap();
+        assert_eq!(s.backup, backups[..3]);
+    }
 
     fn json(src: &str) -> Result<String, StateError> {
         js_object_to_json(src)
