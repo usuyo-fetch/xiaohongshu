@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { webcrypto } from 'node:crypto';
 
+// 脚本经下面 load() 里的 new Function 跑，栈里它的帧都写着这一段
+export const SCRIPT_FRAME = 'eval at load (';
 const SOURCE = readFileSync(new URL('../usuyo-xhs-saved.user.js', import.meta.url), 'utf8');
 
 // ---------- 一点点 DOM ----------
@@ -50,17 +52,6 @@ class Element {
   }
 }
 
-class HTMLInputElement extends Element {}
-let inputValues = new WeakMap();
-Object.defineProperty(HTMLInputElement.prototype, 'value', {
-  get() {
-    return inputValues.get(this) || '';
-  },
-  set(v) {
-    inputValues.set(this, String(v));
-  },
-  configurable: true,
-});
 
 // ---------- 假的小红书站点：只答两个列表接口 ----------
 
@@ -113,6 +104,10 @@ export function load({ port, me = 'me', path = '/user/profile/me', origin }) {
   const violations = [];
   const pageStorage = new Map();
   let tick = () => {};
+  const menu = {};
+  // 浏览器自己的 prompt：测试排好下一次回什么；脚本载入时会拿住这一个
+  const promptAnswers = [];
+  const prompted = [];
 
   const page = {
     location: { href: 'https://www.xiaohongshu.com' + path, pathname: path },
@@ -120,6 +115,10 @@ export function load({ port, me = 'me', path = '/user/profile/me', origin }) {
     localStorage: {
       getItem: (k) => (pageStorage.has(k) ? pageStorage.get(k) : null),
       setItem: (k, v) => pageStorage.set(k, String(v)),
+    },
+    prompt: (message) => {
+      prompted.push(message);
+      return promptAnswers.length ? promptAnswers.shift() : null;
     },
     fetch: (input, init) => fetch(input, init),
     XMLHttpRequest: class {
@@ -131,7 +130,7 @@ export function load({ port, me = 'me', path = '/user/profile/me', origin }) {
   const body = new Element('body');
   const document = {
     body,
-    createElement: (tag) => (tag === 'input' ? new HTMLInputElement(tag) : new Element(tag)),
+    createElement: (tag) => new Element(tag),
   };
 
   function GM_xmlhttpRequest(o) {
@@ -162,7 +161,7 @@ export function load({ port, me = 'me', path = '/user/profile/me', origin }) {
     req.end();
   }
 
-  const names = ['unsafeWindow', 'document', 'GM_getValue', 'GM_setValue', 'GM_xmlhttpRequest', 'HTMLInputElement', 'Element', 'crypto', 'setInterval'];
+  const names = ['unsafeWindow', 'document', 'GM_getValue', 'GM_setValue', 'GM_xmlhttpRequest', 'GM_registerMenuCommand', 'Element', 'crypto', 'setInterval'];
   const run = new Function(...names, source);
   run(
     page,
@@ -170,7 +169,9 @@ export function load({ port, me = 'me', path = '/user/profile/me', origin }) {
     (k, d) => (gm.has(k) ? structuredClone(gm.get(k)) : d),
     (k, v) => gm.set(k, structuredClone(v)),
     GM_xmlhttpRequest,
-    HTMLInputElement,
+    (label, fn) => {
+      menu[label] = fn;
+    },
     Element,
     webcrypto,
     (fn) => {
@@ -192,10 +193,11 @@ export function load({ port, me = 'me', path = '/user/profile/me', origin }) {
     panelText: () => panel().textContent,
     note: () => panel().find((e) => e.text !== undefined && /note/.test(e.className || '')).text,
     click: (label) => button(label).click(),
-    type: (value) => {
-      panel().find((e) => e.tagName === 'input').value = value;
-    },
-    inputValue: () => panel().find((e) => e.tagName === 'input').value,
+    answerPrompt: (value) => promptAnswers.push(value),
+    prompted,
+    menu: (label) => menu[label](),
+    menuLabels: () => Object.keys(menu),
+    hasInput: () => !!body.find((e) => e.tagName === 'input' || (e.shadow && e.shadow.find((x) => x.tagName === 'input'))),
   };
 }
 

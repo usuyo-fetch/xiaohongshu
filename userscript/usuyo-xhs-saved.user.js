@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         usuyo：交出小红书的收藏和赞过
 // @namespace    usuyo-fetch/xiaohongshu
-// @version      0.2.0
+// @version      0.2.1
 // @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题；点「交给 usuyo」时先确认本机 127.0.0.1:47615 上的是 usuyo，再把清单交过去，你在 usuyo 的导入页确认。不对小红书发额外请求、不自动滚动、不读 cookie，除了本机的 usuyo 不往别处发。
 // @match        https://www.xiaohongshu.com/*
 // @run-at       document-start
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
 // @connect      127.0.0.1
 // @license      MIT
 // ==/UserScript==
@@ -20,6 +21,14 @@
  * 写页面 localStorage。交给 usuyo 走它的投递接口（usuyo 插件协议 §5.1）：
  * 只连 http://127.0.0.1:47615，经脚本管理器的 GM_xmlhttpRequest；先握手确认对面是 usuyo，
  * 核对不过就什么都不发，投递令牌只在核对过以后才放进请求头。
+ *
+ * 令牌从浏览器自己的输入对话框（prompt）或脚本管理器的菜单填，不进页面里的输入框。
+ * 脚本和页面脚本可能跑在同一个环境里（例如 Violentmonkey 的页面模式），页面可以改掉
+ * String、RegExp、Function 的原型方法。所以碰令牌的每一步（核对形状、取出 id、去掉首尾空白、
+ * 算 HMAC 的密钥字节、显示前几位）都只用下标 t[i]、字符串拼接和脚本一开始就拿住的函数，
+ * 不再按名字去原型上找方法。这只在脚本先于页面脚本跑起来时有用（@run-at document-start）；
+ * 脚本管理器注入得晚、页面已经先改过这些函数时，它挡不住。令牌交给 GM_xmlhttpRequest 以后
+ * 怎么走，由脚本管理器负责。
  *
  * xhs-vault 的许可声明：
  *
@@ -60,22 +69,31 @@
   const USUYO = 'http://127.0.0.1:' + PORT;
   const REQUEST_TIMEOUT_MS = 5000;
   const BATCH_MAX = 5000;
-  // 投递令牌：`<id>.<秘密>`，在 usuyo 的导入页发
-  const TOKEN_SHAPE = /^[0-9a-f]{16}\.[0-9a-f]{64}$/;
+  // 投递令牌：`<16 位 id>.<64 位秘密>`，都是小写十六进制，在 usuyo 的导入页发
+  const TOKEN_ID_LEN = 16;
+  const TOKEN_LEN = TOKEN_ID_LEN + 1 + 64;
 
   // 碰到令牌的几样东西在页面脚本跑起来以前就拿住，页面之后改了原型也换不掉它们
+  const reflectApply = Reflect.apply;
+  const Bytes = Uint8Array;
   const subtle = crypto.subtle;
   const importKey = subtle.importKey.bind(subtle);
   const sign = subtle.sign.bind(subtle);
   const getRandomValues = crypto.getRandomValues.bind(crypto);
-  const inputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  const nativePrompt = page.prompt;
   const attachShadow = Element.prototype.attachShadow;
+  // 字符 → 字节，只收令牌里会出现的字符；没有原型，查表不经过任何方法
+  const TOKEN_BYTE = Object.create(null);
+  for (let c = 0; c < 10; c++) TOKEN_BYTE['0123456789'[c]] = 48 + c;
+  for (let c = 0; c < 6; c++) TOKEN_BYTE['abcdef'[c]] = 97 + c;
+  const SPACE = Object.create(null);
+  for (const c of [' ', '\t', '\n', '\r', '\v', '\f', '\u00a0', '\u2028', '\u2029', '\u3000', '\ufeff']) SPACE[c] = true;
 
   // ---------- 记下的条目，存在脚本管理器里，页面读不到 ----------
 
   /** @type {{favorite: Object<string, {token: string, title: string, seenAt: number}>, like: Object}} */
   const store = loadStore();
-  const status = { favorite: { hasMore: null }, like: { hasMore: null }, warning: '', notice: '', askToken: false };
+  const status = { favorite: { hasMore: null }, like: { hasMore: null }, warning: '', notice: '' };
 
   function loadStore() {
     const empty = { favorite: {}, like: {} };
@@ -221,9 +239,44 @@
   const UNREACHABLE = new Error('unreachable');
   let busy = false;
 
+  // ---------- 令牌：下面几个函数只用 t[i]、length 和拼接 ----------
+
+  function isToken(t) {
+    if (typeof t !== 'string' || t.length !== TOKEN_LEN) return false;
+    for (let i = 0; i < TOKEN_LEN; i++) {
+      if (i === TOKEN_ID_LEN ? t[i] !== '.' : TOKEN_BYTE[t[i]] === undefined) return false;
+    }
+    return true;
+  }
+
+  /** 令牌 `.` 前的 id（不是秘密）的前 `n` 位。 */
+  function tokenId(t, n) {
+    let id = '';
+    for (let i = 0; i < n; i++) id += t[i];
+    return id;
+  }
+
+  /** 令牌的字节（HMAC 的密钥）；令牌只有 ASCII，一个字符一个字节。 */
+  function tokenBytes(t) {
+    const b = new Bytes(t.length);
+    for (let i = 0; i < t.length; i++) b[i] = t[i] === '.' ? 46 : TOKEN_BYTE[t[i]];
+    return b;
+  }
+
+  /** 去掉首尾空白，不用 String.prototype.trim。 */
+  function trimmed(v) {
+    let start = 0;
+    let end = v.length;
+    while (start < end && SPACE[v[start]]) start++;
+    while (end > start && SPACE[v[end - 1]]) end--;
+    let out = '';
+    for (let i = start; i < end; i++) out += v[i];
+    return out;
+  }
+
   function storedToken() {
     const t = GM_getValue('deliverToken', '');
-    return typeof t === 'string' && TOKEN_SHAPE.test(t) ? t : '';
+    return isToken(t) ? t : '';
   }
 
   /** 只连本机的 usuyo；连不上、超时都当作没人在听。 */
@@ -251,7 +304,7 @@
   /** 和 usuyo 的 crates/usuyo-api/src/handshake.rs 签同样的字节。 */
   async function proofOf(token, nonce) {
     const enc = new TextEncoder();
-    const key = await importKey('raw', enc.encode(token), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const key = await importKey('raw', tokenBytes(token), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     const msg = 'usuyo-daemon-proof/v1\n127.0.0.1:' + PORT + '\n' + nonce;
     return hex(new Uint8Array(await sign('HMAC', key, enc.encode(msg))));
   }
@@ -269,7 +322,7 @@
    */
   async function prove(token) {
     const nonce = hex(getRandomValues(new Uint8Array(32)));
-    const client = token.slice(0, token.indexOf('.'));
+    const client = tokenId(token, TOKEN_ID_LEN);
     const res = await local('POST', '/handshake', { 'Content-Type': 'application/json' }, JSON.stringify({ nonce, client }));
     if (res.status === 403) return 'refused';
     if (res.status !== 200) return 'stranger';
@@ -311,12 +364,10 @@
       render();
       return;
     }
-    const token = storedToken();
+    let token = storedToken();
     if (!token) {
-      status.askToken = true;
-      status.notice = '先贴上 usuyo 导入页发的令牌（交进来的清单 › 发一个令牌）';
-      render();
-      return;
+      if (!askToken()) return;
+      token = storedToken();
     }
     busy = true;
     status.warning = '';
@@ -371,17 +422,29 @@
     render();
   }
 
-  function saveToken() {
-    const value = inputValue.get.call(ui.input).trim();
-    inputValue.set.call(ui.input, '');
-    if (!TOKEN_SHAPE.test(value)) {
+  /** 用浏览器自己的对话框问令牌，存进脚本管理器；存下了回 true。 */
+  function askToken() {
+    let value = null;
+    try {
+      value = reflectApply(nativePrompt, page, ['贴上 usuyo 导入页发的令牌（交进来的清单 › 发一个令牌）。它只存在脚本管理器里。']);
+    } catch (e) {
+      value = null;
+    }
+    if (typeof value !== 'string' || !trimmed(value).length) {
+      status.notice = '没拿到令牌（对话框被关掉或没弹出来）；也可以从脚本管理器的菜单里点「填 usuyo 令牌」';
+      render();
+      return false;
+    }
+    value = trimmed(value);
+    if (!isToken(value)) {
       status.notice = '这不像 usuyo 的投递令牌：应是一串 id、一个点、再一串秘密';
       render();
-      return;
+      return false;
     }
     GM_setValue('deliverToken', value);
-    status.askToken = false;
-    handOver();
+    status.notice = '令牌存着了';
+    render();
+    return true;
   }
 
   // 按钮的入口：意料之外的错误在这里说出来，不留在「先确认…」上
@@ -394,10 +457,12 @@
 
   function forgetToken() {
     GM_setValue('deliverToken', '');
-    status.askToken = false;
     status.notice = '令牌忘掉了；下次交的时候再贴一个';
     render();
   }
+
+  GM_registerMenuCommand('填 usuyo 令牌', askToken);
+  GM_registerMenuCommand('忘掉 usuyo 令牌', forgetToken);
 
   function clearAll() {
     store.favorite = {};
@@ -429,8 +494,6 @@
       'button{flex:1;padding:3px 6px;border:1px solid rgba(255,255,255,.25);border-radius:5px;' +
       'background:transparent;color:inherit;font:inherit;cursor:pointer}' +
       'button:hover{background:rgba(255,255,255,.12)}' +
-      'input{flex:2;min-width:0;padding:3px 6px;border:1px solid rgba(255,255,255,.25);border-radius:5px;' +
-      'background:transparent;color:inherit;font:inherit}' +
       '.key{display:flex;gap:6px;align-items:center;margin-top:4px;opacity:.75}.key button{flex:0 0 auto}' +
       '.note{margin-top:4px;opacity:.75}.warn{margin-top:4px;color:#ffb4a8}';
     const box = document.createElement('div');
@@ -449,17 +512,7 @@
     clear.textContent = '清空';
     clear.addEventListener('click', clearAll);
     row.append(go, clear);
-    // 令牌只在这里贴一次，存进脚本管理器；之后只显示 id 的前几位
-    const ask = document.createElement('div');
-    ask.className = 'row';
-    const input = document.createElement('input');
-    input.type = 'password';
-    input.autocomplete = 'off';
-    input.placeholder = '贴上 usuyo 发的令牌';
-    const keep = document.createElement('button');
-    keep.textContent = '存着';
-    keep.addEventListener('click', saveToken);
-    ask.append(input, keep);
+    // 令牌存着时只显示 id 的前几位
     const key = document.createElement('div');
     key.className = 'key';
     const keyText = document.createElement('span');
@@ -467,10 +520,10 @@
     forget.textContent = '忘掉令牌';
     forget.addEventListener('click', forgetToken);
     key.append(keyText, forget);
-    box.append(line, warn, note, ask, key, row);
+    box.append(line, warn, note, key, row);
     root.append(style, box);
     document.body.appendChild(host);
-    ui = { host, line, warn, note, ask, input, key, keyText };
+    ui = { host, line, warn, note, key, keyText };
     render();
   }
 
@@ -485,9 +538,8 @@
     ui.warn.textContent = status.warning;
     ui.note.textContent = status.notice || '自己往下翻，翻到的会记下来';
     const token = storedToken();
-    ui.ask.style.display = status.askToken && !token ? '' : 'none';
     ui.key.style.display = token ? '' : 'none';
-    ui.keyText.textContent = token ? '令牌 ' + token.slice(0, 6) + '… 存在脚本管理器里' : '';
+    ui.keyText.textContent = token ? '令牌 ' + tokenId(token, 6) + '… 存在脚本管理器里' : '';
   }
 
   // 页面是单页应用：换页时只切换显示，不做别的

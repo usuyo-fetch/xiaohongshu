@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { createHmac, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { load, startSite, startListener, note, until } from './harness.mjs';
+import { load, startSite, startListener, note, until, SCRIPT_FRAME } from './harness.mjs';
 
 const BIN = process.env.USUYO_BIN;
 const PORT = Number(process.env.USUYO_TEST_PORT || 47702);
@@ -73,13 +73,10 @@ async function browse(s, user = ME) {
   await new Promise((r) => setTimeout(r, 50));
 }
 
-/** 贴令牌、点交给，等到不再是「先确认…」。 */
+/** 点交给，在浏览器的对话框里贴令牌，等到不再是「先确认…」。 */
 async function handOver(s, token) {
+  if (token) s.answerPrompt(token);
   s.click('交给 usuyo');
-  if (token) {
-    s.type(token);
-    s.click('存着');
-  }
   await until(() => !/先确认/.test(s.note()));
 }
 
@@ -87,7 +84,7 @@ async function handOver(s, token) {
 function noLeak(s, token, port) {
   const secret = token.split('.')[1];
   assert.ok(!s.panelText().includes(secret), 'secret shown in the panel');
-  assert.equal(s.inputValue(), '', 'input keeps the token');
+  assert.ok(!s.hasInput(), 'an input element in the page');
   for (const v of s.pageStorage.values()) assert.ok(!v.includes(secret), 'token in page storage');
   assert.deepEqual(s.violations, []);
   for (const r of s.gmRequests) assert.equal(new URL(r.url).host, '127.0.0.1:' + port);
@@ -218,9 +215,8 @@ test('a token revoked in usuyo is never sent to it', { skip: !BIN && 'USUYO_BIN 
 test('a malformed token is not kept', async () => {
   const s = load({ port: 1, me: ME });
   await browse(s);
+  s.answerPrompt('not-a-token');
   s.click('交给 usuyo');
-  s.type('not-a-token');
-  s.click('存着');
   assert.match(s.note(), /这不像 usuyo 的投递令牌/);
   assert.equal(s.gm.get('deliverToken'), undefined);
   assert.equal(s.gmRequests.length, 0);
@@ -243,5 +239,104 @@ test('a page Origin is turned away before any token is sent', { skip: !BIN && 'U
   await handOver(s, deliverToken);
   assert.match(s.note(), /usuyo 没让这个脚本管理器的请求进来，什么都没交/);
   assert.deepEqual(s.gmRequests.map((r) => new URL(r.url).pathname), ['/handshake']);
+  noLeak(s, deliverToken, PORT);
+});
+
+test('the token can be entered and forgotten from the script manager menu', async () => {
+  const token = randomBytes(8).toString('hex') + '.' + randomBytes(32).toString('hex');
+  const s = load({ port: 1, me: ME });
+  assert.deepEqual(s.menuLabels(), ['填 usuyo 令牌', '忘掉 usuyo 令牌']);
+  await browse(s);
+  // 对话框没弹出来或被关掉（prompt 回 null）
+  s.click('交给 usuyo');
+  assert.match(s.note(), /没拿到令牌.*脚本管理器的菜单里点「填 usuyo 令牌」/);
+  assert.equal(s.gmRequests.length, 0);
+  s.answerPrompt('  ' + token + '\n');
+  s.menu('填 usuyo 令牌');
+  assert.equal(s.gm.get('deliverToken'), token, 'kept, trimmed');
+  // 面板上只有 id 的前 6 位
+  assert.ok(s.panelText().includes('令牌 ' + token.slice(0, 6) + '…'));
+  assert.ok(!s.panelText().includes(token.slice(6, 16)) && !s.panelText().includes(token.slice(17, 25)));
+  s.menu('忘掉 usuyo 令牌');
+  assert.equal(s.gm.get('deliverToken'), '');
+  assert.ok(!s.hasInput());
+});
+
+// 页面和脚本在同一个环境里时，页面能改掉的内置方法：换成会记账的间谍
+function plant(page, secret) {
+  const hits = [];
+  const has = String.prototype.indexOf;
+  const values = Object.values;
+  let inside = false;
+  // 只算脚本自己直接调的：脚本管理器那一侧（测试里是 harness 的 GM_xmlhttpRequest 和 node:http）不算
+  const fromScript = () => {
+    const st = new Error().stack;
+    // 栈：Error、fromScript、间谍自己，再下一帧才是调它的
+    const own = Reflect.apply(has, st, ['\n    at ']);
+    const spyFrame = Reflect.apply(has, st, ['\n    at ', own + 1]);
+    const caller = Reflect.apply(has, st, ['\n    at ', spyFrame + 1]);
+    const next = Reflect.apply(has, st, ['\n', caller + 1]);
+    const at = Reflect.apply(has, st, [SCRIPT_FRAME, caller]);
+    return caller >= 0 && at >= 0 && (next < 0 || at < next);
+  };
+  const carries = (v, depth = 0) => {
+    if (typeof v === 'string') return Reflect.apply(has, v, [secret]) >= 0;
+    if (v && typeof v === 'object' && depth < 2) {
+      try {
+        return values(v).some((x) => carries(x, depth + 1));
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  };
+  const restores = [];
+  const spy = (obj, name, label) => {
+    const orig = obj[name];
+    obj[name] = function (...args) {
+      if (!inside) {
+        inside = true;
+        try {
+          if (fromScript() && (carries(this) || args.some((a) => carries(a)))) hits.push(label);
+        } finally {
+          inside = false;
+        }
+      }
+      return new.target ? Reflect.construct(orig, args, new.target) : Reflect.apply(orig, this, args);
+    };
+    restores.push(() => (obj[name] = orig));
+  };
+  for (const n of ['exec', 'test']) spy(RegExp.prototype, n, 'RegExp.' + n);
+  for (const n of ['trim', 'indexOf', 'slice', 'charCodeAt', 'split', 'substring']) spy(String.prototype, n, 'String.' + n);
+  spy(TextEncoder.prototype, 'encode', 'TextEncoder.encode');
+  spy(JSON, 'stringify', 'JSON.stringify');
+  for (const n of ['call', 'apply', 'bind']) spy(Function.prototype, n, 'Function.' + n);
+  const promptCalls = [];
+  const pagePrompt = page.prompt;
+  page.prompt = (...a) => {
+    promptCalls.push(a);
+    return null;
+  };
+  restores.push(() => (page.prompt = pagePrompt));
+  return { hits, promptCalls, restore: () => restores.reverse().forEach((r) => r()) };
+}
+
+test('page-patched builtins never see the token', { skip: !BIN && 'USUYO_BIN not set' }, async () => {
+  const s = load({ port: PORT, me: ME });
+  await browse(s);
+  const secret = deliverToken.split('.')[1];
+  const spies = plant(s.page, secret);
+  try {
+    s.answerPrompt(' ' + deliverToken + ' ');
+    s.click('交给 usuyo');
+    await until(() => !/先确认|令牌存着了/.test(s.note()));
+  } finally {
+    spies.restore();
+  }
+  assert.match(s.note(), /交给 usuyo 了：收藏 3 条、赞过 2 条/);
+  assert.deepEqual(spies.hits, [], 'a patched builtin saw the token');
+  assert.deepEqual(spies.promptCalls, [], 'the page prompt was used');
+  assert.equal(s.prompted.length, 1, 'the prompt captured at start was used');
+  assert.ok(!s.hasInput());
   noLeak(s, deliverToken, PORT);
 });
