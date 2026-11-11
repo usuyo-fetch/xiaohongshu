@@ -1,22 +1,25 @@
 // ==UserScript==
 // @name         usuyo：交出小红书的收藏和赞过
 // @namespace    usuyo-fetch/xiaohongshu
-// @version      0.1.1
-// @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题。usuyo 还不能接收这份清单，这一版不往任何地方发送。不发额外请求、不自动滚动、不读 cookie。
+// @version      0.2.0
+// @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题；点「交给 usuyo」时先确认本机 127.0.0.1:47615 上的是 usuyo，再把清单交过去，你在 usuyo 的导入页确认。不对小红书发额外请求、不自动滚动、不读 cookie，除了本机的 usuyo 不往别处发。
 // @match        https://www.xiaohongshu.com/*
 // @run-at       document-start
 // @noframes
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
 // @license      MIT
 // ==/UserScript==
 
 /*
  * 改写自 wkwunju/xhs-vault 的 userscript/xhs-export.user.js（MIT）：
  * 留下了「截获页面自己发出的列表请求」这一做法；去掉了自动滚动、导出 cookies.json、
- * 写页面 localStorage。交给 usuyo 的那一步等 usuyo 有了接收清单的本机接口、
- * 又能先确认对面是 usuyo 时再加（usuyo 插件协议 §5.1）；在那之前脚本不往外发任何东西。
+ * 写页面 localStorage。交给 usuyo 走它的投递接口（usuyo 插件协议 §5.1）：
+ * 只连 http://127.0.0.1:47615，经脚本管理器的 GM_xmlhttpRequest；先握手确认对面是 usuyo，
+ * 核对不过就什么都不发，投递令牌只在核对过以后才放进请求头。
  *
  * xhs-vault 的许可声明：
  *
@@ -52,12 +55,27 @@
   // 收藏页、赞过页自己请求的列表（OpenCLI 的 collection-helpers.js 记的接口名）
   const ENDPOINT = /\/api\/sns\/web\/v\d+\/note\/(collect|like)\/page(?:[?#]|$)/;
   const LABEL = { favorite: '收藏', like: '赞过' };
+  // usuyo 的本机端口。测试载入源码时把这一行换成别的端口；用户这边没有设置项。
+  const PORT = 47615;
+  const USUYO = 'http://127.0.0.1:' + PORT;
+  const REQUEST_TIMEOUT_MS = 5000;
+  const BATCH_MAX = 5000;
+  // 投递令牌：`<id>.<秘密>`，在 usuyo 的导入页发
+  const TOKEN_SHAPE = /^[0-9a-f]{16}\.[0-9a-f]{64}$/;
+
+  // 碰到令牌的几样东西在页面脚本跑起来以前就拿住，页面之后改了原型也换不掉它们
+  const subtle = crypto.subtle;
+  const importKey = subtle.importKey.bind(subtle);
+  const sign = subtle.sign.bind(subtle);
+  const getRandomValues = crypto.getRandomValues.bind(crypto);
+  const inputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  const attachShadow = Element.prototype.attachShadow;
 
   // ---------- 记下的条目，存在脚本管理器里，页面读不到 ----------
 
   /** @type {{favorite: Object<string, {token: string, title: string, seenAt: number}>, like: Object}} */
   const store = loadStore();
-  const status = { favorite: { hasMore: null }, like: { hasMore: null }, warning: '', notice: '' };
+  const status = { favorite: { hasMore: null }, like: { hasMore: null }, warning: '', notice: '', askToken: false };
 
   function loadStore() {
     const empty = { favorite: {}, like: {} };
@@ -196,14 +214,188 @@
 
   // ---------- 交给 usuyo ----------
 
-  // usuyo 现在还没有接收这份清单的本机接口，也没有办法先确认监听那个端口的就是 usuyo。
-  // 所以这一版什么都不发：不要令牌，不连本机端口，记下的条目只留在脚本管理器里。
-  // 早先版本存下的令牌和端口在这里清掉。
+  // 0.1.0 以前的版本存过别的令牌和端口，用不上了，清掉。
   GM_setValue('usuyoToken', '');
   GM_setValue('usuyoPort', '');
 
-  function deliver() {
-    status.notice = '这一版 usuyo 还不能接收清单，什么都没有发出去；记下的条目留在这里，12 小时内有效';
+  const UNREACHABLE = new Error('unreachable');
+  let busy = false;
+
+  function storedToken() {
+    const t = GM_getValue('deliverToken', '');
+    return typeof t === 'string' && TOKEN_SHAPE.test(t) ? t : '';
+  }
+
+  /** 只连本机的 usuyo；连不上、超时都当作没人在听。 */
+  function local(method, path, headers, data) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method,
+        url: USUYO + path,
+        headers,
+        data,
+        timeout: REQUEST_TIMEOUT_MS,
+        anonymous: true,
+        onload: (r) => resolve({ status: r.status, text: String(r.responseText || '') }),
+        onerror: () => reject(UNREACHABLE),
+        ontimeout: () => reject(UNREACHABLE),
+        onabort: () => reject(UNREACHABLE),
+      });
+    });
+  }
+
+  function hex(bytes) {
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /** 和 usuyo 的 crates/usuyo-api/src/handshake.rs 签同样的字节。 */
+  async function proofOf(token, nonce) {
+    const enc = new TextEncoder();
+    const key = await importKey('raw', enc.encode(token), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const msg = 'usuyo-daemon-proof/v1\n127.0.0.1:' + PORT + '\n' + nonce;
+    return hex(new Uint8Array(await sign('HMAC', key, enc.encode(msg))));
+  }
+
+  function same(a, b) {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+  }
+
+  /**
+   * 握手：只发一个新的随机数和令牌的 id（`.` 前那段，不是秘密），对面用整个令牌签回来，
+   * 这边用自己存着的令牌核对。回 'usuyo'、'refused'（usuyo 不让这个来源进）或 'stranger'。
+   */
+  async function prove(token) {
+    const nonce = hex(getRandomValues(new Uint8Array(32)));
+    const client = token.slice(0, token.indexOf('.'));
+    const res = await local('POST', '/handshake', { 'Content-Type': 'application/json' }, JSON.stringify({ nonce, client }));
+    if (res.status === 403) return 'refused';
+    if (res.status !== 200) return 'stranger';
+    let proof;
+    try {
+      proof = JSON.parse(res.text).proof;
+    } catch (e) {
+      return 'stranger';
+    }
+    if (typeof proof !== 'string' || !/^[0-9a-f]{64}$/.test(proof)) return 'stranger';
+    return same(await proofOf(token, nonce), proof) ? 'usuyo' : 'stranger';
+  }
+
+  function today() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function noteUrl(id, token) {
+    return 'https://www.xiaohongshu.com/explore/' + id + '?xsec_token=' + encodeURIComponent(token);
+  }
+
+  /** 还在有效期里的条目，按列表分好、每批不超过 BATCH_MAX。 */
+  function batches() {
+    const now = Date.now();
+    const out = [];
+    for (const action of ['favorite', 'like']) {
+      const ids = Object.keys(store[action]).filter((id) => now - store[action][id].seenAt < KEEP_MS);
+      for (let i = 0; i < ids.length; i += BATCH_MAX) out.push({ action, ids: ids.slice(i, i + BATCH_MAX) });
+    }
+    return out;
+  }
+
+  async function deliver() {
+    if (busy) return;
+    const todo = batches();
+    if (!todo.length) {
+      status.notice = '还没有记下的条目：先在收藏、赞过页往下翻';
+      render();
+      return;
+    }
+    const token = storedToken();
+    if (!token) {
+      status.askToken = true;
+      status.notice = '先贴上 usuyo 导入页发的令牌（交进来的清单 › 发一个令牌）';
+      render();
+      return;
+    }
+    busy = true;
+    status.warning = '';
+    status.notice = '先确认本机上的是 usuyo…';
+    render();
+    const handed = { favorite: 0, like: 0 };
+    let stop = '';
+    try {
+      const who = await prove(token);
+      if (who === 'refused') {
+        stop = 'usuyo 没让这个脚本管理器的请求进来，什么都没交';
+      } else if (who === 'stranger') {
+        stop = '端口 ' + PORT + ' 上的程序没能证明自己是 usuyo（也可能这个令牌在 usuyo 里撤掉了），令牌没有发出去，什么都没交';
+      } else {
+        for (const b of todo) {
+          const links = b.ids.map((id) => {
+            const item = store[b.action][id];
+            const link = { url: noteUrl(id, item.token) };
+            if (item.title) link.title = item.title;
+            return link;
+          });
+          const res = await local(
+            'POST',
+            '/v1/batches',
+            { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+            JSON.stringify({ name: '小红书' + LABEL[b.action] + ' ' + today(), action: b.action, links }),
+          );
+          if (res.status === 401) {
+            stop = 'usuyo 不认这个令牌（可能撤掉了），剩下的没有收下，还存着；点「忘掉令牌」，再贴一个新的';
+            break;
+          }
+          if (res.status !== 202) {
+            stop = 'usuyo 这一批没有收下（回了 ' + res.status + '），剩下的还存着';
+            break;
+          }
+          for (const id of b.ids) delete store[b.action][id];
+          saveStore();
+          handed[b.action] += b.ids.length;
+        }
+      }
+    } catch (e) {
+      if (e !== UNREACHABLE) throw e;
+      stop = 'usuyo 没有开着（本机 ' + PORT + ' 端口没有回应），' + (handed.favorite + handed.like ? '剩下的还存着' : '什么都没交');
+    } finally {
+      busy = false;
+    }
+    const total = handed.favorite + handed.like;
+    const done = total
+      ? '交给 usuyo 了：收藏 ' + handed.favorite + ' 条、赞过 ' + handed.like + ' 条，到 usuyo 的导入页确认了才会去取。'
+      : '';
+    status.notice = done + stop;
+    render();
+  }
+
+  function saveToken() {
+    const value = inputValue.get.call(ui.input).trim();
+    inputValue.set.call(ui.input, '');
+    if (!TOKEN_SHAPE.test(value)) {
+      status.notice = '这不像 usuyo 的投递令牌：应是一串 id、一个点、再一串秘密';
+      render();
+      return;
+    }
+    GM_setValue('deliverToken', value);
+    status.askToken = false;
+    handOver();
+  }
+
+  // 按钮的入口：意料之外的错误在这里说出来，不留在「先确认…」上
+  function handOver() {
+    deliver().catch((e) => {
+      status.notice = '没交成：' + String((e && e.message) || e).slice(0, 80);
+      render();
+    });
+  }
+
+  function forgetToken() {
+    GM_setValue('deliverToken', '');
+    status.askToken = false;
+    status.notice = '令牌忘掉了；下次交的时候再贴一个';
     render();
   }
 
@@ -227,7 +419,7 @@
   function mount() {
     if (ui || !document.body) return;
     const host = document.createElement('div');
-    const root = host.attachShadow({ mode: 'closed' });
+    const root = attachShadow.call(host, { mode: 'closed' });
     const style = document.createElement('style');
     style.textContent =
       ':host{all:initial}' +
@@ -237,6 +429,9 @@
       'button{flex:1;padding:3px 6px;border:1px solid rgba(255,255,255,.25);border-radius:5px;' +
       'background:transparent;color:inherit;font:inherit;cursor:pointer}' +
       'button:hover{background:rgba(255,255,255,.12)}' +
+      'input{flex:2;min-width:0;padding:3px 6px;border:1px solid rgba(255,255,255,.25);border-radius:5px;' +
+      'background:transparent;color:inherit;font:inherit}' +
+      '.key{display:flex;gap:6px;align-items:center;margin-top:4px;opacity:.75}.key button{flex:0 0 auto}' +
       '.note{margin-top:4px;opacity:.75}.warn{margin-top:4px;color:#ffb4a8}';
     const box = document.createElement('div');
     box.className = 'box';
@@ -249,15 +444,33 @@
     row.className = 'row';
     const go = document.createElement('button');
     go.textContent = '交给 usuyo';
-    go.addEventListener('click', deliver);
+    go.addEventListener('click', handOver);
     const clear = document.createElement('button');
     clear.textContent = '清空';
     clear.addEventListener('click', clearAll);
     row.append(go, clear);
-    box.append(line, warn, note, row);
+    // 令牌只在这里贴一次，存进脚本管理器；之后只显示 id 的前几位
+    const ask = document.createElement('div');
+    ask.className = 'row';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.autocomplete = 'off';
+    input.placeholder = '贴上 usuyo 发的令牌';
+    const keep = document.createElement('button');
+    keep.textContent = '存着';
+    keep.addEventListener('click', saveToken);
+    ask.append(input, keep);
+    const key = document.createElement('div');
+    key.className = 'key';
+    const keyText = document.createElement('span');
+    const forget = document.createElement('button');
+    forget.textContent = '忘掉令牌';
+    forget.addEventListener('click', forgetToken);
+    key.append(keyText, forget);
+    box.append(line, warn, note, ask, key, row);
     root.append(style, box);
     document.body.appendChild(host);
-    ui = { host, line, warn, note };
+    ui = { host, line, warn, note, ask, input, key, keyText };
     render();
   }
 
@@ -271,6 +484,10 @@
     ui.line.textContent = 'usuyo · ' + part('favorite') + ' · ' + part('like');
     ui.warn.textContent = status.warning;
     ui.note.textContent = status.notice || '自己往下翻，翻到的会记下来';
+    const token = storedToken();
+    ui.ask.style.display = status.askToken && !token ? '' : 'none';
+    ui.key.style.display = token ? '' : 'none';
+    ui.keyText.textContent = token ? '令牌 ' + token.slice(0, 6) + '… 存在脚本管理器里' : '';
   }
 
   // 页面是单页应用：换页时只切换显示，不做别的
