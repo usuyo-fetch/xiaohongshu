@@ -33,6 +33,7 @@ pub fn local_policy() -> Policy {
             ))
         },
         public: |ip| ip == IpAddr::from([127, 0, 0, 1]),
+        cookies_over_http: true,
     }
 }
 
