@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use url::Url;
-use usuyo_plugin::protocol::{
+use usuyo_plugin_kit::protocol::{
     Access, Author, Completeness, Evidence, FetchOutput, ItemKind, Media, MediaKind, OutputKind,
     PluginEvent, RelPath, Rfc3339, TextFormat,
 };
@@ -124,7 +124,7 @@ fn load_page(
     let mut at = note.page_url(http.site());
     for _ in 0..PAGE_HOPS {
         let mut response = http.get(&at, Purpose::Page { cookie }, PAGE_TIMEOUT)?;
-        let status = response.status().as_u16();
+        let status = response.status();
         if let Some(next) = http::location(&response, &at)? {
             refuse_redirect(http.site(), &next, &note.id)?;
             at = link::page_url(http.site(), &next);
@@ -519,8 +519,8 @@ fn download_image(
     let mut response = http
         .get(&url, Purpose::Image, IMAGE_TIMEOUT)
         .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status().as_u16()));
+    if !(200..300).contains(&response.status()) {
+        return Err(format!("HTTP {}", response.status()));
     }
     let ext = http::header(&response, "content-type")
         .and_then(image_extension)
@@ -573,11 +573,11 @@ fn download_stream(
 }
 
 fn save_stream(http: &Http<'_>, url: &Url, name: &str, out: &Path) -> Result<String, String> {
-    let mut response = http
+    let response = http
         .get(url, Purpose::Video, VIDEO_TIMEOUT)
         .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status().as_u16()));
+    if !(200..300).contains(&response.status()) {
+        return Err(format!("HTTP {}", response.status()));
     }
     let mime = http::header(&response, "content-type")
         .unwrap_or("video/mp4")
@@ -595,11 +595,7 @@ fn save_stream(http: &Http<'_>, url: &Url, name: &str, out: &Path) -> Result<Str
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let result = (|| {
-        let mut reader = response
-            .body_mut()
-            .with_config()
-            .limit(VIDEO_BYTES)
-            .reader();
+        let mut reader = response.into_reader(VIDEO_BYTES);
         let mut file = File::create(&path).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 256 << 10];
         let mut done = 0u64;

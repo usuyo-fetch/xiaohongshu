@@ -101,6 +101,6 @@ cargo test
 
 测试只连本机：一个假笔记页服务、一个假短链服务，页面是 `tests/fixtures/` 里照参考项目记下的形状手写的。正式运行只认 `Site::xiaohongshu()` 的主机名单；测试用的 `Site::loopback()` 只接受回环地址。页面改版时，只改 `src/state.rs`。
 
-依赖 usuyo 仓库里的 `usuyo-plugin` crate（只用 `protocol` 模块），按路径引用，要和 usuyo 仓库放在同一个上级目录下。
+依赖 usuyo 仓库里的 `usuyo-plugin-kit` crate（协议类型和发请求的客户端：每个请求只连名单里那一类主机、只连公网地址），按路径引用，要和 usuyo 仓库放在同一个上级目录下。
 
 许可证：MIT。

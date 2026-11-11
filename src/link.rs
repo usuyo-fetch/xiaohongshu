@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use url::Url;
-use usuyo_plugin::protocol::{Canonicalized, Identity, PlatformId};
+use usuyo_plugin_kit::protocol::{Canonicalized, Identity, PlatformId};
 
 use crate::error::Error;
 use crate::http::{self, Http, Purpose};
@@ -119,7 +119,7 @@ pub(crate) fn expand(http: &Http<'_>, short: &Url) -> Result<Option<NoteLink>, E
     let mut at = short.clone();
     for _ in 0..SHORT_HOPS {
         let response = http.get(&at, Purpose::Short, SHORT_TIMEOUT)?;
-        let status = response.status().as_u16();
+        let status = response.status();
         let Some(next) = http::location(&response, &at)? else {
             return Err(match status {
                 404 | 410 => Error::NotFound(format!("short link answered HTTP {status}")),

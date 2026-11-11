@@ -3,10 +3,11 @@
 //! 只有 `tests/fetch.rs` 用它。
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 
 use usuyo_fetch_xiaohongshu::Site;
+use usuyo_plugin_kit::http::Policy;
 
 pub const ID: &str = "671234567890abcdef012345";
 pub const COOKIE: &str = "a1=visitor-a1; webId=visitor-web; web_session=visitor-session-secret";
@@ -20,6 +21,19 @@ pub struct Seen {
     pub target: String,
     pub cookie: Option<String>,
     pub referer: Option<String>,
+}
+
+/// 测试用的地址策略：只有 127.0.0.1 算公网，不查 DNS。
+pub fn local_policy() -> Policy {
+    Policy {
+        lookup: |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no DNS in tests",
+            ))
+        },
+        public: |ip| ip == IpAddr::from([127, 0, 0, 1]),
+    }
 }
 
 pub struct Fake {
@@ -47,7 +61,7 @@ impl Fake {
     }
 
     pub fn site(&self) -> Site {
-        Site::loopback(&self.web, &self.short).unwrap()
+        Site::loopback(&self.web, &self.short, local_policy()).unwrap()
     }
 
     pub fn seen(&self) -> Vec<Seen> {

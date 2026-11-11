@@ -9,7 +9,7 @@ use anyhow::Context;
 use serde::Serialize;
 use usuyo_fetch_xiaohongshu::fetch::{self, Request};
 use usuyo_fetch_xiaohongshu::{Error, Lang, Site, VISITOR_COOKIE_KEY, VisitorCookie, link};
-use usuyo_plugin::protocol::{CallFailure, Envelope, ErrorCode, OutputKind};
+use usuyo_plugin_kit::protocol::{CallFailure, Envelope, ErrorCode, OutputKind};
 
 const USAGE: &str = "usage: usuyo-fetch-xiaohongshu canonicalize <url> | fetch <url> --out <dir> [--want a,b] | health [--probe]";
 /// 密钥文件只有一个小 JSON，超过这个大小就不是宿主写的。
@@ -91,7 +91,7 @@ fn run_fetch(
     input: &str,
     out: PathBuf,
     want: Option<BTreeSet<OutputKind>>,
-) -> anyhow::Result<usuyo_plugin::protocol::FetchOutput> {
+) -> anyhow::Result<usuyo_plugin_kit::protocol::FetchOutput> {
     if !out.is_absolute() || !out.is_dir() {
         return Err(Error::InvalidArgs(format!(
             "--out `{}` is not an existing absolute directory",

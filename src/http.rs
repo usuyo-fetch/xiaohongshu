@@ -1,11 +1,11 @@
-//! 发请求的唯一入口：主机先过 [`Site::may_request`]，重定向一律不自动跟，
+//! 发请求的唯一入口：主机先过 [`Site::may_request`]，再经 `usuyo_plugin_kit::http`
+//! 按用途只连那一类主机、只连公网地址。重定向一律不自动跟，
 //! cookie 只发给笔记页的主机，每个请求都有超时，整次调用有总时限。
 
 use std::time::{Duration, Instant};
 
-use ureq::Body;
-use ureq::http::Response;
 use url::Url;
+use usuyo_plugin_kit::http::{Client, Cookie, Hosts, Response};
 
 use crate::error::Error;
 use crate::site::Site;
@@ -60,23 +60,24 @@ impl std::fmt::Debug for VisitorCookie {
 
 pub(crate) struct Http<'s> {
     site: &'s Site,
-    agent: ureq::Agent,
+    /// 笔记页、短链、图片视频各一个客户端，各自只连那一类主机。
+    web: Client,
+    short: Client,
+    media: Client,
     deadline: Instant,
 }
 
 impl<'s> Http<'s> {
     /// `budget` 是整次调用留给网络的总时长，要比宿主的总超时短，留出收尾的时间。
     pub(crate) fn new(site: &'s Site, budget: Duration) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .user_agent(USER_AGENT)
-            .build()
-            .into();
+        let client = |hosts: Vec<String>| {
+            Client::new(USER_AGENT, Hosts::only(hosts)).with_policy(site.policy())
+        };
         Self {
             site,
-            agent,
+            web: client(site.web_hosts()),
+            short: client(site.short_hosts()),
+            media: client(site.media_hosts()),
             deadline: Instant::now() + budget,
         }
     }
@@ -96,7 +97,7 @@ impl<'s> Http<'s> {
         url: &Url,
         purpose: Purpose<'_>,
         timeout: Duration,
-    ) -> Result<Response<Body>, Error> {
+    ) -> Result<Response, Error> {
         let allowed = match purpose {
             Purpose::Page { .. } => self.site.is_web(url),
             Purpose::Short => self.site.short_origin(url).is_some(),
@@ -117,25 +118,29 @@ impl<'s> Http<'s> {
             Purpose::Image => ACCEPT_IMAGE,
             Purpose::Video => ACCEPT_MEDIA,
         };
-        let mut request = self
-            .agent
-            .get(url.as_str())
+        let client = match purpose {
+            Purpose::Page { .. } => &self.web,
+            Purpose::Short => &self.short,
+            Purpose::Image | Purpose::Video => &self.media,
+        };
+        let mut request = client
+            .get(url)
             .header("Accept", accept)
-            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6");
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
+            .timeout(timeout.min(left));
         match purpose {
-            Purpose::Page { cookie: Some(c) } => request = request.header("Cookie", c.as_str()),
+            // 访客 cookie 只给笔记页的主机
+            Purpose::Page { cookie: Some(c) } => {
+                request = request.cookie(&Cookie::new(c.as_str(), self.site.web_hosts()));
+            }
             // 浏览器从笔记页取图时只带源，不带路径和 xsec_token
             Purpose::Image | Purpose::Video => {
-                request = request.header("Referer", self.site.web_origin().as_str());
+                let referer = self.site.web_origin().as_str().to_owned();
+                request = request.header("Referer", &referer);
             }
             Purpose::Page { cookie: None } | Purpose::Short => {}
         }
-        request
-            .config()
-            .timeout_global(Some(timeout.min(left)))
-            .build()
-            .call()
-            .map_err(|e| Error::Network(e.to_string()))
+        request.send().map_err(|e| Error::Network(e.to_string()))
     }
 }
 
@@ -153,13 +158,13 @@ pub(crate) enum Purpose<'c> {
 }
 
 /// 响应头里的值。
-pub(crate) fn header<'r>(response: &'r Response<Body>, name: &str) -> Option<&'r str> {
-    response.headers().get(name).and_then(|v| v.to_str().ok())
+pub(crate) fn header<'r>(response: &'r Response, name: &str) -> Option<&'r str> {
+    response.header(name)
 }
 
 /// 重定向的去处，按请求的地址解析相对路径。
-pub(crate) fn location(response: &Response<Body>, from: &Url) -> Result<Option<Url>, Error> {
-    if !response.status().is_redirection() {
+pub(crate) fn location(response: &Response, from: &Url) -> Result<Option<Url>, Error> {
+    if !(300..400).contains(&response.status()) {
         return Ok(None);
     }
     let raw = header(response, "location").ok_or_else(|| {
@@ -171,27 +176,29 @@ pub(crate) fn location(response: &Response<Body>, from: &Url) -> Result<Option<U
 }
 
 /// 读整个响应体，超过 `limit` 字节就算失败。
-pub(crate) fn read_capped(response: &mut Response<Body>, limit: u64) -> Result<Vec<u8>, Error> {
-    response
-        .body_mut()
-        .with_config()
-        .limit(limit)
-        .read_to_vec()
-        .map_err(|e| match e {
-            ureq::Error::BodyExceedsLimit(_) => {
-                Error::UpstreamChanged(format!("response is larger than {limit} bytes"))
-            }
-            other => Error::Network(other.to_string()),
-        })
+pub(crate) fn read_capped(response: &mut Response, limit: u64) -> Result<Vec<u8>, Error> {
+    response.read_to_vec(limit).map_err(|e| match e {
+        usuyo_plugin_kit::http::Error::TooLarge(_) => {
+            Error::UpstreamChanged(format!("response is larger than {limit} bytes"))
+        }
+        other => Error::Network(other.to_string()),
+    })
 }
 
 /// `Retry-After` 只认秒数。
-pub(crate) fn retry_after(response: &Response<Body>) -> Option<u64> {
+pub(crate) fn retry_after(response: &Response) -> Option<u64> {
     header(response, "retry-after").and_then(|v| v.trim().parse().ok())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{IpAddr, TcpListener};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use usuyo_plugin_kit::http::Policy;
+
     use super::*;
 
     #[test]
@@ -203,5 +210,94 @@ mod tests {
         }
         let c = VisitorCookie::parse("a1=secret").unwrap();
         assert!(!format!("{c:?}").contains("secret"));
+    }
+
+    /// 本机服务：`/to/<地址>` 回 302 到那个地址；记下连进来几次。
+    fn serve() -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                count.fetch_add(1, Ordering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+                let location = path.strip_prefix("/to/").unwrap_or_default();
+                let head = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(head.as_bytes()).ok();
+            }
+        });
+        (base, hits)
+    }
+
+    fn local_policy() -> Policy {
+        Policy {
+            lookup: |_, _| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no DNS in tests",
+                ))
+            },
+            public: |ip| ip == IpAddr::from([127, 0, 0, 1]),
+        }
+    }
+
+    /// 图片主机跳去名单外的主机、跳去回环地址：3xx 原样交回，跳转目标一次也不连。
+    #[test]
+    fn redirect_targets_off_the_list_are_never_contacted() {
+        let (web, _) = serve();
+        let (elsewhere, hits) = serve();
+        let port = elsewhere.rsplit(':').next().unwrap();
+        let site = Site::loopback(&web, &web, local_policy()).unwrap();
+        let http = Http::new(&site, Duration::from_secs(10));
+        let cookie = VisitorCookie::parse("a1=secret").unwrap();
+        for target in [
+            format!("http://localhost:{port}/x.jpg"),
+            format!("http://127.0.0.2:{port}/x.jpg"),
+        ] {
+            let from = Url::parse(&format!("{web}/to/{target}")).unwrap();
+            for purpose in [
+                Purpose::Image,
+                Purpose::Page {
+                    cookie: Some(&cookie),
+                },
+            ] {
+                let response = http.get(&from, purpose, Duration::from_secs(5)).unwrap();
+                assert_eq!(response.status(), 302);
+                let next = location(&response, &from).unwrap().unwrap();
+                assert_eq!(next.as_str(), target);
+                assert!(matches!(
+                    http.get(&next, purpose, Duration::from_secs(5)),
+                    Err(Error::Internal(_))
+                ));
+            }
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // 正式的地址策略下，回环上的笔记页连之前就被拒
+        let strict = Site::loopback(&web, &web, Policy::strict()).unwrap();
+        let http = Http::new(&strict, Duration::from_secs(10));
+        let page = Url::parse(&format!("{web}/explore/x")).unwrap();
+        let err = http
+            .get(
+                &page,
+                Purpose::Page { cookie: None },
+                Duration::from_secs(5),
+            )
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("not a public address"), "{err}");
     }
 }

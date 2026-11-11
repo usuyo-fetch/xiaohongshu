@@ -1,6 +1,6 @@
 //! 这个插件会失败的几种方式，和它们对应的协议错误码（协议 §3.3）。
 
-use usuyo_plugin::protocol::{CallFailure, ErrorCode, Need, NotFoundReason};
+use usuyo_plugin_kit::protocol::{CallFailure, ErrorCode, Need, NotFoundReason};
 
 use crate::state::StateError;
 

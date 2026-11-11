@@ -6,6 +6,7 @@
 use std::net::IpAddr;
 
 use url::Url;
+use usuyo_plugin_kit::http::Policy;
 
 /// 笔记页、短链、图片视频三类主机。
 #[derive(Debug, Clone)]
@@ -18,6 +19,8 @@ pub struct Site {
     media: Vec<String>,
     /// 页面给的 `http://` 图片视频地址改走 `https://`。
     media_https: bool,
+    /// 地址策略：正式运行只连公网地址。
+    policy: Policy,
 }
 
 /// 规范链接和作者链接总写真站点，测试里也一样：它们只用于去重和显示。
@@ -33,11 +36,13 @@ impl Site {
                 .to_vec(),
             media: vec!["*.xhscdn.com".into()],
             media_https: true,
+            policy: Policy::strict(),
         }
     }
 
     /// 测试用：笔记页和短链各是一个本机地址，图片视频只能在回环地址上。
-    pub fn loopback(web: &str, short: &str) -> Result<Self, String> {
+    /// `policy` 由测试给，让本机测试服务算公网。
+    pub fn loopback(web: &str, short: &str, policy: Policy) -> Result<Self, String> {
         let parse = |text: &str| -> Result<Url, String> {
             let url = Url::parse(text).map_err(|e| format!("`{text}`: {e}"))?;
             match url.host_str().and_then(|h| h.parse::<IpAddr>().ok()) {
@@ -50,7 +55,31 @@ impl Site {
             short: vec![parse(short)?],
             media: vec!["127.0.0.1".into()],
             media_https: false,
+            policy,
         })
+    }
+
+    pub(crate) fn policy(&self) -> Policy {
+        self.policy
+    }
+
+    /// 发请求的客户端用的主机名单：`*.` 开头的写成 `.` 开头的后缀。
+    pub(crate) fn web_hosts(&self) -> Vec<String> {
+        self.web.host_str().map(str::to_owned).into_iter().collect()
+    }
+
+    pub(crate) fn short_hosts(&self) -> Vec<String> {
+        self.short
+            .iter()
+            .filter_map(|u| u.host_str().map(str::to_owned))
+            .collect()
+    }
+
+    pub(crate) fn media_hosts(&self) -> Vec<String> {
+        self.media
+            .iter()
+            .map(|m| m.strip_prefix('*').unwrap_or(m).to_owned())
+            .collect()
     }
 
     pub(crate) fn web_origin(&self) -> &Url {
@@ -130,9 +159,10 @@ mod tests {
 
     #[test]
     fn loopback_refuses_real_hosts() {
-        assert!(Site::loopback("https://www.xiaohongshu.com", "http://127.0.0.1:2").is_err());
-        assert!(Site::loopback("http://127.0.0.1:1", "https://xhslink.com").is_err());
-        let site = Site::loopback("http://127.0.0.1:1", "http://127.0.0.1:2").unwrap();
+        let p = Policy::strict();
+        assert!(Site::loopback("https://www.xiaohongshu.com", "http://127.0.0.1:2", p).is_err());
+        assert!(Site::loopback("http://127.0.0.1:1", "https://xhslink.com", p).is_err());
+        let site = Site::loopback("http://127.0.0.1:1", "http://127.0.0.1:2", p).unwrap();
         assert!(!site.may_request(&Url::parse("https://www.xiaohongshu.com/explore/x").unwrap()));
         assert!(!site.may_request(&Url::parse("https://sns-webpic-qc.xhscdn.com/a").unwrap()));
     }

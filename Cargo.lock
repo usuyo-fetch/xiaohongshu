@@ -1028,9 +1028,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
- "ureq",
  "url",
  "usuyo-plugin",
+ "usuyo-plugin-kit",
 ]
 
 [[package]]
@@ -1055,6 +1055,16 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "usuyo-plugin-kit"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+ "ureq",
+ "url",
+ "usuyo-plugin",
 ]
 
 [[package]]
