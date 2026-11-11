@@ -17,7 +17,7 @@ pub enum Error {
     NotFound(String),
     /// 被送去首页或登录页；`cookie_tried` 说这次带没带访客 cookie。
     #[error("sent to {at} (visitor cookie used: {cookie_tried})")]
-    LoginRequired { at: String, cookie_tried: bool },
+    VisitorRequired { at: String, cookie_tried: bool },
     #[error("verification page or risk-control answer: {0}")]
     Blocked(String),
     #[error("rate limited: {message}")]
@@ -84,8 +84,8 @@ impl Error {
                 )
             },
             Error::NotFound(_) => with(ErrorCode::NotFound, None),
-            Error::LoginRequired { cookie_tried, .. } => with(
-                ErrorCode::LoginRequired,
+            Error::VisitorRequired { cookie_tried, .. } => with(
+                ErrorCode::VisitorRequired,
                 Some(if *cookie_tried {
                     lang.pick(
                         "带上访客身份也被送回了首页，访客身份可能过期了：在「获取插件」页的小红书下面换一份",

@@ -81,11 +81,11 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
     let fetched_at = Rfc3339::from_timestamp(jiff::Timestamp::now());
     let (page, cookie_used) = match load_page(&http, &note_link, None) {
         Ok(page) => (page, false),
-        Err(Error::LoginRequired { at, .. }) => match request.visitor_cookie {
+        Err(Error::VisitorRequired { at, .. }) => match request.visitor_cookie {
             Some(cookie) => match load_page(&http, &note_link, Some(cookie)) {
                 Ok(page) => (page, true),
-                Err(Error::LoginRequired { at, .. }) => {
-                    return Err(Error::LoginRequired {
+                Err(Error::VisitorRequired { at, .. }) => {
+                    return Err(Error::VisitorRequired {
                         at,
                         cookie_tried: true,
                     });
@@ -93,7 +93,7 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
                 Err(other) => return Err(other),
             },
             None => {
-                return Err(Error::LoginRequired {
+                return Err(Error::VisitorRequired {
                     at,
                     cookie_tried: false,
                 });
@@ -169,7 +169,7 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
         return match state::note(&parsed, &note.id) {
             Ok(n) => Ok(Page { note: n, status }),
             // 页面结构在、这篇的内容没给：和被送回首页一样，是要访客 cookie 的样子
-            Err(StateError::Absent(id)) => Err(Error::LoginRequired {
+            Err(StateError::Absent(id)) => Err(Error::VisitorRequired {
                 at: format!("a page without content for note {id}"),
                 cookie_tried: cookie.is_some(),
             }),
@@ -205,7 +205,7 @@ fn refuse_redirect(site: &Site, next: &Url, id: &str) -> Result<(), Error> {
         return Err(Error::Blocked(format!("redirected to {path}")));
     }
     if path.starts_with("/login") || path.starts_with("/website-login") {
-        return Err(Error::LoginRequired {
+        return Err(Error::VisitorRequired {
             at,
             cookie_tried: false,
         });
@@ -229,7 +229,7 @@ fn refuse_redirect(site: &Site, next: &Url, id: &str) -> Result<(), Error> {
         return Err(Error::NotFound(format!("redirected to {path}")));
     }
     if matches!(path, "/" | "/explore" | "/explore/") {
-        return Err(Error::LoginRequired {
+        return Err(Error::VisitorRequired {
             at,
             cookie_tried: false,
         });
@@ -255,7 +255,7 @@ fn risk_json(text: &str) -> Error {
             message: described,
             retry_after: None,
         },
-        Some(-100 | -101) => Error::LoginRequired {
+        Some(-100 | -101) => Error::VisitorRequired {
             at: described,
             cookie_tried: false,
         },
@@ -775,18 +775,18 @@ mod tests {
             redirect("/explore/aaaaaaaaaaaaaaaaaaaaaaaa"),
             Err(Error::UpstreamChanged(_))
         ));
-        assert!(matches!(redirect("/"), Err(Error::LoginRequired { .. })));
+        assert!(matches!(redirect("/"), Err(Error::VisitorRequired { .. })));
         assert!(matches!(
             redirect("/explore"),
-            Err(Error::LoginRequired { .. })
+            Err(Error::VisitorRequired { .. })
         ));
         assert!(matches!(
             redirect("/login?redirectPath=x"),
-            Err(Error::LoginRequired { .. })
+            Err(Error::VisitorRequired { .. })
         ));
         assert!(matches!(
             redirect("/website-login/error"),
-            Err(Error::LoginRequired { .. })
+            Err(Error::VisitorRequired { .. })
         ));
         assert!(matches!(
             redirect("/website-login/captcha?verifyType=1"),
@@ -832,7 +832,7 @@ mod tests {
         ));
         assert!(matches!(
             risk_json(r#"{"code":-101,"msg":"无登录信息"}"#),
-            Error::LoginRequired { .. }
+            Error::VisitorRequired { .. }
         ));
         assert!(matches!(
             risk_json(r#"{"code":300031}"#),

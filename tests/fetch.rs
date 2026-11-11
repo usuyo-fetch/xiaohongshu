@@ -1,4 +1,4 @@
-//! 对着本机的假小红书跑 canonicalize 和 fetch：解析、重定向 → 访客 cookie 重试 → login-required、
+//! 对着本机的假小红书跑 canonicalize 和 fetch：解析、重定向 → 访客 cookie 重试 → visitor-required、
 //! 错误映射、输出目录里有什么。
 
 mod common;
@@ -312,15 +312,15 @@ fn empty_note_content_also_takes_the_cookie_path() {
 
     let fake = Fake::start();
     let f = failure(&run(&fake, &fake.note_url("absent"), None, None));
-    assert_eq!(f.code, ErrorCode::LoginRequired);
+    assert_eq!(f.code, ErrorCode::VisitorRequired);
     assert_eq!(fake.page_requests().len(), 1);
 }
 
 #[test]
-fn without_a_cookie_home_means_login_required() {
+fn without_a_cookie_home_means_visitor_required() {
     let fake = Fake::start();
     let f = failure(&run(&fake, &fake.note_url("needcookie"), None, None));
-    assert_eq!(f.code, ErrorCode::LoginRequired);
+    assert_eq!(f.code, ErrorCode::VisitorRequired);
     assert!(f.hint.as_deref().unwrap().contains("访客身份"), "{f:?}");
     assert_eq!(fake.page_requests().len(), 1);
 }
@@ -330,7 +330,7 @@ fn a_stale_cookie_is_tried_once_then_reported() {
     for token in ["home", "login"] {
         let fake = Fake::start();
         let f = failure(&run(&fake, &fake.note_url(token), Some(COOKIE), None));
-        assert_eq!(f.code, ErrorCode::LoginRequired, "{token}");
+        assert_eq!(f.code, ErrorCode::VisitorRequired, "{token}");
         assert!(f.hint.as_deref().unwrap().contains("过期"), "{f:?}");
         let pages = fake.page_requests();
         assert_eq!(pages.len(), 2, "{token}: {pages:?}");
