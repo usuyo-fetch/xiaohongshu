@@ -497,6 +497,7 @@ fn video_media(path: RelPath, mime: String, stream: &Stream) -> Media {
         mime: Some(mime),
         lang: None,
         duration_sec: stream.duration_ms.map(|ms| ms as f64 / 1000.0),
+        group: None,
     }
 }
 
