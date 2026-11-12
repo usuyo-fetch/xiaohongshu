@@ -1,4 +1,4 @@
-# 小红书获取插件（设计见 usuyo 仓库 docs/research/15-fetch-design-xhs-sph-bili.md §2）。
+# 小红书获取插件（设计见 usuyo 仓库 docs/platforms/xiaohongshu.md §2）。
 # 只按你交来的笔记链接取公开笔记页，不登录、不签名；清单由 userscript/ 里的脚本在你的浏览器里交给 usuyo。
 protocol: 1
 id: usuyo-fetch/xiaohongshu
