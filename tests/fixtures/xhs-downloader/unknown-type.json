@@ -1,0 +1,36 @@
+{
+  "message": "获取小红书作品数据成功",
+  "params": {
+    "url": "https://www.xiaohongshu.com/explore/{ID}?xsec_token=tok",
+    "download": false,
+    "index": null,
+    "cookie": null,
+    "proxy": null,
+    "check_record": false
+  },
+  "data": {
+    "收藏数量": "120",
+    "评论数量": "33",
+    "分享数量": "5",
+    "点赞数量": "980",
+    "作品标签": "磨豆机 咖啡",
+    "作品ID": "{ID}",
+    "作品链接": "https://www.xiaohongshu.com/explore/{ID}?xsec_token=tok",
+    "作品标题": "三分钟磨豆机对比",
+    "作品描述": "三台磨豆机，同一支豆子。",
+    "作品类型": "未知",
+    "发布时间": "2026-10-01_12:00:00",
+    "最后更新时间": "2026-10-02_12:00:00",
+    "时间戳": 1790856000.0,
+    "作者昵称": "咖啡日常",
+    "作者ID": "5b56be0014de415b2db830a6",
+    "作者链接": "https://www.xiaohongshu.com/user/profile/5b56be0014de415b2db830a6",
+    "下载地址": [
+      "{BASE}/media/v.mp4"
+    ],
+    "动图地址": [
+      null
+    ],
+    "封面地址": "{BASE}/img/cover.jpg"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "message": "获取小红书作品数据失败",
+  "params": {"url": "https://www.xiaohongshu.com/explore/{ID}?xsec_token=tok", "download": false, "index": null, "cookie": null, "proxy": null, "check_record": false},
+  "data": null
+}

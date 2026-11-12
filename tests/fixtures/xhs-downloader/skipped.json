@@ -1,0 +1,5 @@
+{
+  "message": "获取小红书作品数据成功",
+  "params": {"url": "https://www.xiaohongshu.com/explore/{ID}?xsec_token=tok", "download": false, "index": null, "cookie": null, "proxy": null, "check_record": true},
+  "data": {"message": "作品 {ID} 存在下载记录，跳过处理"}
+}

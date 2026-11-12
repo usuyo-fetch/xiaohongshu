@@ -1,6 +1,6 @@
 //! 这个插件会失败的几种方式，和它们对应的协议错误码（协议 §3.3）。
 
-use usuyo_plugin_kit::protocol::{CallFailure, ErrorCode, NotFoundReason};
+use usuyo_plugin_kit::protocol::{CallFailure, ErrorCode, Need, NotFoundReason};
 
 use crate::state::StateError;
 
@@ -27,6 +27,9 @@ pub enum Error {
     },
     #[error("page changed: {0}")]
     UpstreamChanged(String),
+    /// XHS-Downloader 的回答和插件认得的不一样（形状、状态码）。
+    #[error("XHS-Downloader answered something unexpected: {0}")]
+    ServiceChanged(String),
     #[error(transparent)]
     State(#[from] StateError),
     #[error("network: {0}")]
@@ -36,12 +39,24 @@ pub enum Error {
     Visitor(String),
     #[error("{0}")]
     Internal(String),
+    /// 本机的 XHS-Downloader 用不上：设置不合格、没在运行、令牌不对。`need` 是协议 §3.3 的 `needs` 项。
+    #[error("{message}")]
+    Missing { need: &'static str, message: String },
     #[error("write output: {0}")]
     Io(#[from] std::io::Error),
     /// 页面回了，但不是能用的回答：带着页面的开头，宿主记进失败日志。
     #[error("{error}")]
     Answered { error: Box<Error>, answer: String },
 }
+
+/// `Error::Missing` 的三种 `need`。
+pub const NEED_ENDPOINT: &str = "setting:endpoint";
+pub const NEED_TOKEN: &str = "setting:xhs-token";
+pub const NEED_SERVICE: &str = "service:endpoint";
+
+/// 服务没在运行时给用户的一句话，`health` 的检查也用它。
+pub const SERVICE_DOWN_ZH: &str = "XHS-Downloader 没有在运行：请先在它的文件夹里运行 uv run main.py api 启动它的 API 模式（它的设置里 cookie 请留空），再重试";
+const SERVICE_DOWN_EN: &str = "XHS-Downloader is not running: start its API mode first with `uv run main.py api` in its folder (leave the cookie in its settings empty), then retry";
 
 /// 留给失败日志的页面开头最多多少字节。
 const ANSWER_BYTES: usize = 4096;
@@ -137,7 +152,34 @@ impl Error {
                     "The Xiaohongshu page changed; this plugin needs an update",
                 )),
             ),
+            Error::ServiceChanged(_) => with(
+                ErrorCode::UpstreamChanged,
+                Some(lang.pick(
+                    "XHS-Downloader 的回答和这个插件认得的不一样：请把它更新到最新版，或等插件更新",
+                    "XHS-Downloader answered something this plugin does not know: update it to the latest version, or wait for a plugin update",
+                )),
+            ),
             Error::Network(_) => with(ErrorCode::Network, None),
+            Error::Missing { need, .. } => {
+                let mut failure = with(
+                    ErrorCode::DependencyMissing,
+                    Some(match *need {
+                        NEED_ENDPOINT => lang.pick(
+                            "插件设置里的 XHS-Downloader 服务地址要写成本机地址，例如 http://127.0.0.1:5556",
+                            "The XHS-Downloader address in the plugin settings must be a local address such as http://127.0.0.1:5556",
+                        ),
+                        NEED_TOKEN => lang.pick(
+                            "XHS-Downloader 要访问令牌：把它启动时在终端打印的令牌（或 uv run main.py token 的输出）填进插件设置的「XHS-Downloader 访问令牌」；已经填了的话，是令牌不对",
+                            "XHS-Downloader needs its access token: put the token it prints when it starts (or the output of `uv run main.py token`) into the plugin setting; if it is already there, it is wrong",
+                        ),
+                        _ => lang.pick(SERVICE_DOWN_ZH, SERVICE_DOWN_EN),
+                    }),
+                );
+                failure.needs = vec![
+                    Need::try_from((*need).to_owned()).expect("constant need"),
+                ];
+                failure
+            }
             Error::Visitor(_) | Error::Internal(_) | Error::Io(_) => {
                 with(ErrorCode::Internal, None)
             }

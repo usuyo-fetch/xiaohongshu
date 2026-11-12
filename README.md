@@ -7,10 +7,11 @@
 <a id="它做什么"></a>
 ## 它做什么
 
-清单里一种取法一个方法（usuyo 协议 §2.3.1）：`note-page`（下面这些，只用访客身份）、`userscript`（见下面的油猴脚本）和 `mediacrawler`（读 MediaCrawler 的结果文件，见下面）做了；`iphone`、`android`、`xhs-downloader`、`rsshub` 列着，还没做。
+清单里一种取法一个方法（usuyo 协议 §2.3.1）：`note-page`（下面这些，只用访客身份）、`userscript`（见下面的油猴脚本）、`xhs-downloader`（问你本机的 XHS-Downloader，见下面）和 `mediacrawler`（读 MediaCrawler 的结果文件，见下面）做了；`iphone`、`android`、`rsshub` 列着，还没做。
 
 | 方法 | 清单里的 id | 取得 | 账号 | 层级 | 现状 |
 |---|---|---|---|---|---|
+| XHS-Downloader | `xhs-downloader` | 单条笔记：正文、作者、发布时间、互动数、标签、图片、视频、实况图的动态部分；身份和 `note-page` 的一样 | 不使用（不带 cookie 和账号；它自己配置里的 cookie 请清空） | `public-web` | 已实现，只对着手写的假服务测过，没有对着真的 XHS-Downloader 跑过，也没有对小红书发过请求 |
 | MediaCrawler 的结果文件 | `mediacrawler` | 存下的：你自己跑 MediaCrawler 留下的小红书帖子文件（json 或 jsonl，或把 data 文件夹压成的 zip）里每篇的链接、标题、作者昵称、发布时间；不读评论、CSV、SQLite；只列链接，内容交给 `note-page` 去取；链接不带文件里的 `xsec_token` | 不使用（文件是使用者自己用登录了账号的 MediaCrawler 跑出来的，这种方法不联网） | `private-api`，默认关 | 已实现，只对着手写的文件测过，没有对着 MediaCrawler 真正的输出比对过 |
 
 - **认链接**：`www.xiaohongshu.com` 上的四种笔记链接（`explore/<id>`、`search_result/<id>`、`discovery/item/<id>`、`user/profile/<作者>/<id>`），和手机分享出来的 `xhslink.com`、`xhslink.cn` 短链。笔记 id 是 24 位十六进制。短链只请求短链主机、只看它跳去哪里，不带任何 cookie，一看到笔记链接就停，不去打开笔记页。
@@ -26,6 +27,29 @@
   media/video.mp4    视频笔记的视频
   media/live-002.mp4 实况图的动态部分（如果有）
 ```
+
+<a id="xhs-downloader-方法"></a>
+## `xhs-downloader` 方法
+
+问你自己在本机运行的 [XHS-Downloader](https://github.com/JoeanAmier/XHS-Downloader)（GPL-3.0，2.8 版的接口）要一篇笔记。插件不带它、不下载它、不安装它，只经本机 HTTP 调用，所以 GPL 不波及这个仓库。
+
+你要先做的：
+
+1. 装好 XHS-Downloader，在它的文件夹里运行 `uv run main.py api` 启动 API 模式（默认监听 `127.0.0.1:5556`）。
+2. 它启动时会在终端打印「鉴权令牌」；之后想再看一次，运行 `uv run main.py token`。令牌默认永久有效（它和 `Volume/auth_secret.key` 绑定）。把令牌填进 usuyo 里本插件设置的「XHS-Downloader 访问令牌」。服务不在默认地址上时，改「XHS-Downloader 服务地址」；只接受本机地址（`127.0.0.1`、`localhost`、`::1`）。
+3. **清空它配置里的 cookie。** 插件请求里不带 `cookie` 字段，服务没收到时用它自己配置文件里的那份（源码 `request.py`：只有请求带了 cookie 才换），不清空的话，这种方法实际用了账号 cookie，和清单里写的 `login: none` 不符。
+
+插件做的事：
+
+- 请求 `POST <服务地址>/xhs/detail`，头 `Authorization: Bearer <令牌>`，体 `{"url": <链接>, "download": false, "check_record": false}`。`download: false` 不让服务下载；`check_record: false` 是因为它默认是 `true`，会跳过有下载记录的作品。不带 `cookie`、`proxy`。
+- 交给服务的长链只留 `xsec_token`、`xsec_source`（和 `note-page` 一样）；没有 `xsec_token` 的链接不发。短链原样交给服务，由它去展开。
+- 图片、视频地址由插件自己下载，不让服务下。只去 `*.xhscdn.com` 和 `ci.xiaohongshu.com`（服务默认的图片格式 JPEG 给的是 `ci.xiaohongshu.com` 上的地址），别的主机不取、写进 `missingReason`。
+- 输出目录：`note.json` 是服务的原样回答（`data`），`meta.json`、`images/`、`media/` 和 `note-page` 的一样。服务把没有的互动数写成 `-1`，这里按没有算。发布时间取它的 `时间戳`（秒），不用它写的本地时间字符串。
+- 服务那边的副作用不归插件管：它会记作者昵称对照，配置了 `note_format` 时还会在它的下载目录里写一份笔记信息，即使 `download` 是 `false`。
+
+自查（`health`，只连本机，不碰小红书）：服务没在监听时这种方法被挡住，提示是「XHS-Downloader 没有在运行：请先在它的文件夹里运行 uv run main.py api 启动它的 API 模式（它的设置里 cookie 请留空），再重试」；没填令牌、地址上答话的不像 XHS-Downloader（`GET /openapi.json` 的标题不是 XHS-Downloader）时也各给一句。
+
+没有验证的：整套接口形状读自它的源码和 README，没有运行过它；`data` 里字段的实际取值（互动数的写法、`作品类型` 在各种笔记上的值）按源码推断；服务取不到时的 `data: null` 分不出是链接过期、笔记已删还是它自己的网络问题，插件统一回 `not-found`，原话进失败日志。
 
 <a id="它不做什么"></a>
 ## 它不做什么

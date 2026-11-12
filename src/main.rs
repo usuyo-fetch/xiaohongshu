@@ -1,5 +1,6 @@
 //! 小红书获取插件的入口。子命令照协议 §3.2：`canonicalize`、`fetch`、`health`；按方法分派（§2.3.1）：
-//! 只有 `note-page` 在这里跑，浏览器脚本在你的浏览器里交链接，别的方法还没做。
+//! `note-page`、`xhs-downloader`（问你本机的 XHS-Downloader）、`mediacrawler`（读文件）在这里跑，
+//! 浏览器脚本在你的浏览器里交链接，别的方法还没做。
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -7,7 +8,9 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use usuyo_fetch_xiaohongshu::fetch::{self, Request};
-use usuyo_fetch_xiaohongshu::{Error, Lang, Site, link, mediacrawler, visitor_cookie};
+use usuyo_fetch_xiaohongshu::{
+    Error, Lang, Site, link, mediacrawler, visitor_cookie, xhsdownloader,
+};
 use usuyo_plugin_kit::fetch::{Call, USAGE};
 use usuyo_plugin_kit::protocol::{CallFailure, Envelope, ErrorCode, FetchHealth, OutputKind};
 
@@ -31,6 +34,15 @@ fn main() -> ExitCode {
             want,
         }) if method == NOTE_PAGE => print(
             run_fetch(&site, &input, out, want.map(|w| w.into_iter().collect())),
+            lang,
+        ),
+        Some(Call::Fetch {
+            input,
+            out,
+            method,
+            want,
+        }) if method == xhsdownloader::METHOD => print(
+            run_xhs_downloader(&site, &input, out, want.map(|w| w.into_iter().collect())),
             lang,
         ),
         Some(Call::List {
@@ -97,13 +109,7 @@ fn run_fetch(
     out: PathBuf,
     want: Option<BTreeSet<OutputKind>>,
 ) -> anyhow::Result<usuyo_plugin_kit::protocol::FetchOutput> {
-    if !out.is_absolute() || !out.is_dir() {
-        return Err(Error::InvalidArgs(format!(
-            "--out `{}` is not an existing absolute directory",
-            out.display()
-        ))
-        .into());
-    }
+    check_out(&out)?;
     let cookie = visitor_cookie(site)?;
     Ok(fetch::fetch(
         site,
@@ -116,9 +122,38 @@ fn run_fetch(
     )?)
 }
 
-/// 不发请求，也没有本机设置要看（协议 §3.10）；访客身份由宿主看着。
+fn run_xhs_downloader(
+    site: &Site,
+    input: &str,
+    out: PathBuf,
+    want: Option<BTreeSet<OutputKind>>,
+) -> anyhow::Result<usuyo_plugin_kit::protocol::FetchOutput> {
+    check_out(&out)?;
+    let service = xhsdownloader::Service::from_env()?;
+    Ok(xhsdownloader::fetch(
+        site,
+        &service,
+        xhsdownloader::Request {
+            input,
+            out: &out,
+            want,
+        },
+    )?)
+}
+
+fn check_out(out: &std::path::Path) -> Result<(), Error> {
+    if !out.is_absolute() || !out.is_dir() {
+        return Err(Error::InvalidArgs(format!(
+            "--out `{}` is not an existing absolute directory",
+            out.display()
+        )));
+    }
+    Ok(())
+}
+
+/// 不向小红书发请求（协议 §3.10）；访客身份由宿主看着。`xhs-downloader` 的检查只连本机的那个服务。
 fn health(probe: bool) -> anyhow::Result<FetchHealth> {
-    let mut h = FetchHealth::new(env!("CARGO_PKG_VERSION"));
+    let mut h = xhsdownloader::health(FetchHealth::new(env!("CARGO_PKG_VERSION")));
     if probe {
         h = h.check(
             "probe",

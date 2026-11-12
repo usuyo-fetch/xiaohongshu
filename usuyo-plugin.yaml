@@ -12,6 +12,9 @@ upstream:
   - name: xhs-vault
     url: https://github.com/wkwunju/xhs-vault
     license: MIT
+  - name: XHS-Downloader（你自己装、自己运行，插件只经本机 HTTP 调用）
+    url: https://github.com/JoeanAmier/XHS-Downloader
+    license: GPL-3.0
 platforms: [xiaohongshu]
 match:
   - "www.xiaohongshu.com/explore/*"
@@ -74,14 +77,21 @@ methods:
         sources:
           - {source: "xiaohongshu:favorites", title: 收藏, action: favorite}
           - {source: "xiaohongshu:likes", title: 赞过, action: like}
+  # xhs-downloader：问你自己在本机运行的 XHS-Downloader（GPL-3.0，API 模式，默认 127.0.0.1:5556），
+  # 插件不带它、不装它、不下载它；请求体固定 download:false、check_record:false，不带 cookie 和账号。
+  # 接口形状读自它 2.8 版的源码和 README，只对假服务测过，见 README。
   - id: xhs-downloader
     name: XHS-Downloader
-    built: false
     access: public-web
     login: none
     account: none
+    risk:
+      text: 空 cookie 的长链被送回首页；不填 cookie 批量取约 108 条后，复制链接的账号被下线
+      source: {label: "XHS-Downloader #305", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/305"}
     capabilities:
       fetch:
+        # 服务自己隔几秒才请求一次、还会重试，一篇要等一阵
+        timeout: 10m
         outputs: [text, images, media:video, meta]
   - id: rsshub
     name: RSSHub（按创作者）
@@ -105,6 +115,9 @@ methods:
         order: unordered
         files: ["*.json", "*.jsonl", "*.zip"]
         reads: MediaCrawler 保存成 json 或 jsonl 的小红书帖子文件（名字里带 contents；评论文件、CSV、SQLite 不读），或把 data 文件夹压成的 zip
+settings:
+  - {key: endpoint, label: XHS-Downloader 服务地址, type: string, default: "http://127.0.0.1:5556"}
+  - {key: xhs-token, label: XHS-Downloader 访问令牌, type: string, secret: true}
 pacing:
   xiaohongshu: {batch: true, interval: 15s, daily: 100}
 permissions:
@@ -113,7 +126,8 @@ permissions:
     write: ["${OUT}"]
   network:
     mode: allowlist
-    hosts: ["www.xiaohongshu.com", "xhslink.com", "xhslink.cn", "*.xhscdn.com"]
+    # ${setting.endpoint}：xhs-downloader 方法连的本机服务；ci.xiaohongshu.com：它默认的图片格式给的图片地址
+    hosts: ["www.xiaohongshu.com", "xhslink.com", "xhslink.cn", "*.xhscdn.com", "ci.xiaohongshu.com", "${setting.endpoint}"]
   env: []
   devices: []
   gpu: false

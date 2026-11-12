@@ -169,18 +169,31 @@ fn health_answers_without_requests() {
     assert_eq!(value["ready"], true);
     assert_eq!(value["protocol"], 1);
     assert_eq!(value["version"], m.header.version.to_string());
-    assert_eq!(value["checks"], serde_json::json!([]));
+    // 只有 xhs-downloader 的检查（本机服务、令牌），而且只挡那一种方法：没有设置时它们不通过，整个插件仍然可用
+    let checks = value["checks"].as_array().unwrap();
+    assert!(!checks.is_empty());
+    assert!(
+        checks
+            .iter()
+            .all(|c| c["methods"] == serde_json::json!(["xhs-downloader"]))
+    );
 
     let value = envelope(&plugin(&["health", "--probe"], None));
     assert_eq!(value["ready"], true);
-    assert_eq!(value["checks"][0]["name"], "probe");
+    assert!(
+        value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "probe")
+    );
 }
 
 #[test]
 fn calls_for_other_methods_are_invalid_args() {
     let dir = tempfile::tempdir().unwrap();
     let input = format!("https://www.xiaohongshu.com/explore/{ID}");
-    for method in ["userscript", "xhs-downloader", "nope"] {
+    for method in ["userscript", "nope"] {
         let out = plugin(
             &[
                 "fetch",
@@ -237,11 +250,11 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let found = usuyo_plugin::discover(&tmp.path().join("plugins")).unwrap();
     assert!(found.rejected.is_empty(), "{:?}", found.rejected);
     assert_eq!(found.fetch.len(), 1);
-    // 访客身份写在 `visitors` 里、只给笔记页那种方法，不是账号站点，也没有手填的设置
+    // 访客身份写在 `visitors` 里、只给笔记页那种方法，不是账号站点，也设置另列
     let spec = &found.fetch[0].spec;
     assert!(spec.sites.is_empty());
     assert_eq!(spec.visitors[0].site, "www.xiaohongshu.com");
-    // routes.md 第 3 节的每一行，加上 mediacrawler；做了的是笔记页、浏览器脚本和读 MediaCrawler 文件
+    // routes.md 第 3 节的每一行，加上 mediacrawler；做了的是笔记页、浏览器脚本、XHS-Downloader 和读 MediaCrawler 文件
     let ids: Vec<&str> = spec.methods.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -256,11 +269,21 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
         ]
     );
     let built: Vec<&str> = spec.built().map(|m| m.id.as_str()).collect();
-    assert_eq!(built, ["note-page", "userscript", "mediacrawler"]);
+    assert_eq!(
+        built,
+        ["note-page", "userscript", "xhs-downloader", "mediacrawler"]
+    );
     let note = spec.method("note-page").unwrap();
     assert_eq!(note.visitors, ["www.xiaohongshu.com"]);
     assert!(note.sites.is_empty() && note.capabilities.fetch.is_some());
-    assert!(found.fetch[0].header.settings.is_empty());
+    // 设置只有 xhs-downloader 方法用：本机服务地址和访问令牌（密钥）
+    let settings: Vec<(&str, bool)> = found.fetch[0]
+        .header
+        .settings
+        .iter()
+        .map(|s| (s.key.as_str(), s.secret))
+        .collect();
+    assert_eq!(settings, [("endpoint", false), ("xhs-token", true)]);
     let host = usuyo_plugin::PluginHost::new(
         usuyo_plugin::HostConfig {
             work_dir: tmp.path().join("work"),
