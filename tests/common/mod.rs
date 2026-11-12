@@ -151,6 +151,8 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
         "video" => page("video-note.html"),
         "live" => page("live-note.html"),
         "nostream" => page("video-nostream.html"),
+        "bare" => page("bare-note.html"),
+        "livefail" => page("live-broken.html"),
         "hop" => redirect("302 Found", format!("/explore/{ID}?xsec_token=ok")),
         "needcookie" if with_cookie => page("image-note.html"),
         "needcookie" => redirect("302 Found", "/".into()),

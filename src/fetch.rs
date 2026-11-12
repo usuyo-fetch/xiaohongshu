@@ -304,11 +304,8 @@ fn write_note(
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_owned);
+    // 没有正文的笔记没有文字这一样，不算缺
     let text = if wanted.contains(&OutputKind::Text) {
-        if text.is_none() {
-            missing.push(OutputKind::Text);
-            reasons.push("这篇笔记没有正文文字".into());
-        }
         text
     } else {
         None
@@ -334,19 +331,19 @@ fn write_note(
                 Err(why) => failed.push(json!({"index": index + 1, "url": raw, "why": why})),
             }
         }
-        if note.images.len() > MAX_IMAGES {
+        let over = note.images.len() > MAX_IMAGES;
+        if over {
             reasons.push(format!("只取了前 {MAX_IMAGES} 张图"));
         }
         let lost = note.images.len().min(MAX_IMAGES) - images.len();
-        if images.is_empty() {
-            missing.push(OutputKind::Images);
-            reasons.push(if note.images.is_empty() {
-                "页面里没有图片".into()
-            } else {
-                "图片都没有下载下来".into()
-            });
+        // 笔记里没有图片就没有这一样，不算缺；有图而少了任何一张都算缺（协议 §3.7：交来一部分、还缺一部分）
+        if images.is_empty() && !note.images.is_empty() {
+            reasons.push("图片都没有下载下来".into());
         } else if lost > 0 {
             reasons.push(format!("有 {lost} 张图片没有下载下来"));
+        }
+        if over || lost > 0 {
+            missing.push(OutputKind::Images);
         }
     }
 
@@ -386,13 +383,13 @@ fn write_note(
                 Err(why) => failed.push(json!({"live": live.url, "index": index + 1, "why": why})),
             }
         }
-        if note.kind == NoteKind::Normal && media.is_empty() {
+        // 图文笔记没有视频，不算缺；有实况图却一段都没下载下来才算
+        if note.kind == NoteKind::Normal
+            && media.is_empty()
+            && note.images.iter().any(|i| i.live.is_some())
+        {
             missing.push(OutputKind::Video);
-            reasons.push(if note.images.iter().any(|i| i.live.is_some()) {
-                "实况图的视频没有下载下来".into()
-            } else {
-                "这是图文笔记，没有视频".into()
-            });
+            reasons.push("实况图的视频没有下载下来".into());
         }
     }
 

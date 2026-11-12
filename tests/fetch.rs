@@ -114,11 +114,11 @@ fn image_note_with_js_literal_quirks() {
 
     // 第三张图的主机不在名单里，不去取，如实写进原因
     assert_eq!(out.images.len(), 2);
+    // 图文笔记没有视频，不算缺；三张图少了一张，图片算缺
     assert_eq!(out.completeness, Completeness::Partial);
-    assert_eq!(out.missing, [OutputKind::Video]);
+    assert_eq!(out.missing, [OutputKind::Images]);
     let reason = out.missing_reason.as_deref().unwrap();
     assert!(reason.contains("有 1 张图片没有下载下来"), "{reason}");
-    assert!(reason.contains("这是图文笔记，没有视频"), "{reason}");
     assert!(out.media.is_empty());
     assert_eq!(out.evidence.status, Some(200));
 
@@ -225,6 +225,31 @@ fn live_photos_are_saved_as_video() {
             "meta.json",
             "note.json"
         ]
+    );
+}
+
+#[test]
+fn a_part_the_note_never_had_is_not_missing() {
+    // 没有正文、没有视频、图片有：全要也是 full，没有原因
+    let fake = Fake::start();
+    let got = run(&fake, &fake.note_url("bare"), None, None);
+    let out = ok(&got);
+    assert_eq!(out.completeness, Completeness::Full);
+    assert!(out.missing.is_empty() && out.missing_reason.is_none());
+    assert!(out.text.is_none() && out.media.is_empty());
+    assert_eq!(out.images.len(), 1);
+}
+
+#[test]
+fn live_photo_video_that_fails_is_missing_with_a_reason() {
+    let fake = Fake::start();
+    let got = run(&fake, &fake.note_url("livefail"), None, None);
+    let out = ok(&got);
+    assert_eq!(out.completeness, Completeness::Partial);
+    assert_eq!(out.missing, [OutputKind::Video]);
+    assert_eq!(
+        out.missing_reason.as_deref(),
+        Some("实况图的视频没有下载下来")
     );
 }
 
