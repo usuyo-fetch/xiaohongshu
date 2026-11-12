@@ -55,6 +55,12 @@ methods:
     login: required
     account: own-phone
     interaction: foreground
+    drives: iphone
+    capabilities:
+      list:
+        sources:
+          - {source: "xiaohongshu:favorites", title: 收藏, action: favorite}
+          - {source: "xiaohongshu:likes", title: 赞过, action: like}
   - id: android
     name: 安卓手机
     built: false
@@ -62,6 +68,12 @@ methods:
     login: required
     account: own-phone
     interaction: foreground
+    drives: android
+    capabilities:
+      list:
+        sources:
+          - {source: "xiaohongshu:favorites", title: 收藏, action: favorite}
+          - {source: "xiaohongshu:likes", title: 赞过, action: like}
   - id: xhs-downloader
     name: XHS-Downloader
     built: false
