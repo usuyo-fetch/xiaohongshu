@@ -7,7 +7,11 @@
 <a id="它做什么"></a>
 ## 它做什么
 
-清单里一种取法一个方法（usuyo 协议 §2.3.1）：`note-page`（下面这些，只用访客身份）和 `userscript`（见下面的油猴脚本）做了；`iphone`、`android`、`xhs-downloader`、`rsshub` 列着，还没做。
+清单里一种取法一个方法（usuyo 协议 §2.3.1）：`note-page`（下面这些，只用访客身份）、`userscript`（见下面的油猴脚本）和 `mediacrawler`（读 MediaCrawler 的结果文件，见下面）做了；`iphone`、`android`、`xhs-downloader`、`rsshub` 列着，还没做。
+
+| 方法 | 清单里的 id | 取得 | 账号 | 层级 | 现状 |
+|---|---|---|---|---|---|
+| MediaCrawler 的结果文件 | `mediacrawler` | 存下的：你自己跑 MediaCrawler 留下的小红书帖子文件（json 或 jsonl，或把 data 文件夹压成的 zip）里每篇的链接、标题、作者昵称、发布时间；不读评论、CSV、SQLite；只列链接，内容交给 `note-page` 去取；链接不带文件里的 `xsec_token` | 不使用（文件是使用者自己用登录了账号的 MediaCrawler 跑出来的，这种方法不联网） | `private-api`，默认关 | 已实现，只对着手写的文件测过，没有对着 MediaCrawler 真正的输出比对过 |
 
 - **认链接**：`www.xiaohongshu.com` 上的四种笔记链接（`explore/<id>`、`search_result/<id>`、`discovery/item/<id>`、`user/profile/<作者>/<id>`），和手机分享出来的 `xhslink.com`、`xhslink.cn` 短链。笔记 id 是 24 位十六进制。短链只请求短链主机、只看它跳去哪里，不带任何 cookie，一看到笔记链接就停，不去打开笔记页。
 - **取一篇笔记**：用普通桌面浏览器的请求头打开这条链接，先不带 cookie；请求里只带 `xsec_token` 和 `xsec_source` 两个参数，手机分享链接里 `shareRedId` 一类指向分享人的参数不发出去（usuyo 记下的原链接不变）；从页面里的状态对象读出标题、正文、作者、发布时间、标签、互动数，下载页面给出的图片和视频。

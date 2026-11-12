@@ -241,7 +241,7 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let spec = &found.fetch[0].spec;
     assert!(spec.sites.is_empty());
     assert_eq!(spec.visitors[0].site, "www.xiaohongshu.com");
-    // routes.md 第 3 节的每一行；做了的是笔记页和浏览器脚本
+    // routes.md 第 3 节的每一行，加上 mediacrawler；做了的是笔记页、浏览器脚本和读 MediaCrawler 文件
     let ids: Vec<&str> = spec.methods.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -251,11 +251,12 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
             "iphone",
             "android",
             "xhs-downloader",
-            "rsshub"
+            "rsshub",
+            "mediacrawler"
         ]
     );
     let built: Vec<&str> = spec.built().map(|m| m.id.as_str()).collect();
-    assert_eq!(built, ["note-page", "userscript"]);
+    assert_eq!(built, ["note-page", "userscript", "mediacrawler"]);
     let note = spec.method("note-page").unwrap();
     assert_eq!(note.visitors, ["www.xiaohongshu.com"]);
     assert!(note.sites.is_empty() && note.capabilities.fetch.is_some());

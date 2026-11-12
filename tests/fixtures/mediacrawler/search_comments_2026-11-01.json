@@ -1,0 +1,28 @@
+[
+    {
+        "comment_id": "c-1",
+        "create_time": 1790856000000,
+        "note_id": "6650a1b2c3d4e5f607182930",
+        "content": "invented comment",
+        "creator_hash": "3f2a9c1d7b5e8a40",
+        "nickname": "路***人",
+        "sub_comment_count": 0,
+        "pictures": "",
+        "parent_comment_id": "",
+        "last_modify_ts": 1793000000000,
+        "like_count": 0
+    },
+    {
+        "comment_id": "c-1",
+        "create_time": 1790856000000,
+        "note_id": "6650a1b2c3d4e5f607182931",
+        "content": "invented comment",
+        "creator_hash": "3f2a9c1d7b5e8a40",
+        "nickname": "路***人",
+        "sub_comment_count": 0,
+        "pictures": "",
+        "parent_comment_id": "",
+        "last_modify_ts": 1793000000000,
+        "like_count": 0
+    }
+]

@@ -7,12 +7,14 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use usuyo_fetch_xiaohongshu::fetch::{self, Request};
-use usuyo_fetch_xiaohongshu::{Error, Lang, Site, link, visitor_cookie};
+use usuyo_fetch_xiaohongshu::{Error, Lang, Site, link, mediacrawler, visitor_cookie};
 use usuyo_plugin_kit::fetch::{Call, USAGE};
 use usuyo_plugin_kit::protocol::{CallFailure, Envelope, ErrorCode, FetchHealth, OutputKind};
 
 /// 清单里在插件进程里跑的那一种方法。
 const NOTE_PAGE: &str = "note-page";
+/// 读 MediaCrawler 结果文件的那一种方法：只列，不联网。
+const MEDIACRAWLER: &str = "mediacrawler";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,6 +33,17 @@ fn main() -> ExitCode {
             run_fetch(&site, &input, out, want.map(|w| w.into_iter().collect())),
             lang,
         ),
+        Some(Call::List {
+            method,
+            source,
+            cursor,
+            ..
+        }) if method == MEDIACRAWLER => {
+            write_envelope(&match mediacrawler::list_call(&source, cursor.as_deref()) {
+                Ok(page) => Envelope::Ok(page),
+                Err(failure) => Envelope::Err(failure),
+            })
+        }
         Some(Call::Health { probe }) => print(health(probe), lang),
         Some(other) => print::<()>(
             Err(Error::InvalidArgs(format!(
@@ -61,7 +74,12 @@ fn print<T: Serialize>(result: anyhow::Result<T>, lang: Lang) -> u8 {
             }
         },
     };
-    match serde_json::to_string(&envelope) {
+    write_envelope(&envelope)
+}
+
+/// 把信封写到 stdout，返回退出码。
+fn write_envelope<T: Serialize>(envelope: &Envelope<T>) -> u8 {
+    match serde_json::to_string(envelope) {
         Ok(json) => {
             println!("{json}");
             if envelope.exit_code() == 0 { 0 } else { 1 }
