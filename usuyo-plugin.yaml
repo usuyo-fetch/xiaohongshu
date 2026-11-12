@@ -20,19 +20,66 @@ match:
   - "www.xiaohongshu.com/user/profile/*"
   - "xhslink.com/*"
   - "xhslink.cn/*"
-access: public-web
-login: none
 # 访客身份不是账号：usuyo 开一次首页、不登录，存下页面自己生成的 cookie，经 USUYO_VISITOR 交给笔记页请求。
 visitors:
   - site: www.xiaohongshu.com
     name: 小红书
     url: https://www.xiaohongshu.com/
-capabilities:
-  fetch:
+# 几种方法各列一项（usuyo 协议 §2.3.1），没做的也列；行和 usuyo 仓库 docs/platforms/routes.md 第 3 节一一对应。
+methods:
+  - id: note-page
+    name: 公开笔记页
     access: public-web
     login: none
+    account: visitor
     visitors: [www.xiaohongshu.com]
-    outputs: [text, images, media:video, meta]
+    risk:
+      text: 空 cookie 的长链被送回首页；不填 cookie 批量取约 108 条后，复制链接的账号被下线
+      source: {label: "XHS-Downloader #305", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/305"}
+    capabilities:
+      fetch:
+        outputs: [text, images, media:video, meta]
+  - id: userscript
+    name: 浏览器脚本（收藏、赞过）
+    access: browser-session
+    login: required
+    account: own-browser
+    delivers: links
+    risk:
+      text: 网页对采集类扩展弹「有害插件」；只截获、不发请求的脚本没有处罚报告
+      source: {label: "XHS-Downloader #283", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/283"}
+  - id: iphone
+    name: iPhone 镜像
+    built: false
+    access: vision-ui
+    login: required
+    account: own-phone
+    interaction: foreground
+  - id: android
+    name: 安卓手机
+    built: false
+    access: vision-ui
+    login: required
+    account: own-phone
+    interaction: foreground
+  - id: xhs-downloader
+    name: XHS-Downloader
+    built: false
+    access: public-web
+    login: none
+    account: none
+    capabilities:
+      fetch:
+        outputs: [text, images, media:video, meta]
+  - id: rsshub
+    name: RSSHub（按创作者）
+    built: false
+    access: public-web
+    login: none
+    account: none
+    risk:
+      text: 无头浏览器在小红书上记高
+      source: {label: "调研 06 §1.1", url: "https://github.com/usuyo/usuyo/blob/main/docs/research/06-platform-access-and-account-risk.md#11-七个层级"}
 pacing:
   xiaohongshu: {batch: true, interval: 15s, daily: 100}
 permissions:

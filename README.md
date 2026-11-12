@@ -7,6 +7,8 @@
 <a id="它做什么"></a>
 ## 它做什么
 
+清单里一种取法一个方法（usuyo 协议 §2.3.1）：`note-page`（下面这些，只用访客身份）和 `userscript`（见下面的油猴脚本）做了；`iphone`、`android`、`xhs-downloader`、`rsshub` 列着，还没做。
+
 - **认链接**：`www.xiaohongshu.com` 上的四种笔记链接（`explore/<id>`、`search_result/<id>`、`discovery/item/<id>`、`user/profile/<作者>/<id>`），和手机分享出来的 `xhslink.com`、`xhslink.cn` 短链。笔记 id 是 24 位十六进制。短链只请求短链主机、只看它跳去哪里，不带任何 cookie，一看到笔记链接就停，不去打开笔记页。
 - **取一篇笔记**：用普通桌面浏览器的请求头打开这条链接，先不带 cookie；请求里只带 `xsec_token` 和 `xsec_source` 两个参数，手机分享链接里 `shareRedId` 一类指向分享人的参数不发出去（usuyo 记下的原链接不变）；从页面里的状态对象读出标题、正文、作者、发布时间、标签、互动数，下载页面给出的图片和视频。
 - **如实说缺了什么**：图文笔记没有视频、某张图没下载下来、页面没给视频地址，都写进 `missing` 和 `missingReason`，不假装拿全了。

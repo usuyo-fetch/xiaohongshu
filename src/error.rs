@@ -38,6 +38,26 @@ pub enum Error {
     Internal(String),
     #[error("write output: {0}")]
     Io(#[from] std::io::Error),
+    /// 页面回了，但不是能用的回答：带着页面的开头，宿主记进失败日志。
+    #[error("{error}")]
+    Answered { error: Box<Error>, answer: String },
+}
+
+/// 留给失败日志的页面开头最多多少字节。
+const ANSWER_BYTES: usize = 4096;
+
+impl Error {
+    /// 带上页面的开头（`text` 是整页，只留开头）。
+    pub fn answered(self, text: &str) -> Error {
+        let mut end = text.len().min(ANSWER_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Error::Answered {
+            error: Box::new(self),
+            answer: text[..end].to_owned(),
+        }
+    }
 }
 
 /// `hint` 按 `USUYO_LOCALE` 写：`zh` 开头写中文，其余写英文。
@@ -71,6 +91,7 @@ impl Error {
             ..CallFailure::new(code, message.clone())
         };
         match self {
+            Error::Answered { error, answer } => error.to_failure(lang).with_detail(answer),
             Error::Unsupported(_) => with(ErrorCode::UnsupportedInput, None),
             Error::InvalidArgs(_) => with(ErrorCode::InvalidArgs, None),
             Error::LinkExpired(_) => CallFailure {

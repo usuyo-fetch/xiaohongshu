@@ -90,7 +90,14 @@ fn fetch_without_xsec_token_answers_without_network() {
     let dir = tempfile::tempdir().unwrap();
     let input = format!("https://www.xiaohongshu.com/explore/{ID}");
     let out = plugin(
-        &["fetch", &input, "--out", dir.path().to_str().unwrap()],
+        &[
+            "fetch",
+            &input,
+            "--out",
+            dir.path().to_str().unwrap(),
+            "--method",
+            "note-page",
+        ],
         None,
     );
     assert_eq!(out.status.code(), Some(1));
@@ -120,7 +127,14 @@ fn a_malformed_visitor_identity_is_reported_before_any_request() {
     std::fs::create_dir(&out_dir).unwrap();
     let input = format!("https://www.xiaohongshu.com/explore/{ID}?xsec_token=x");
     let out = plugin(
-        &["fetch", &input, "--out", out_dir.to_str().unwrap()],
+        &[
+            "fetch",
+            &input,
+            "--out",
+            out_dir.to_str().unwrap(),
+            "--method",
+            "note-page",
+        ],
         Some(&visitor),
     );
     let value = envelope(&out);
@@ -133,7 +147,14 @@ fn a_malformed_visitor_identity_is_reported_before_any_request() {
     let visitor = visitor_file(dir.path(), "visitor-secret-1");
     let input = format!("https://www.xiaohongshu.com/explore/{ID}");
     let out = plugin(
-        &["fetch", &input, "--out", out_dir.to_str().unwrap()],
+        &[
+            "fetch",
+            &input,
+            "--out",
+            out_dir.to_str().unwrap(),
+            "--method",
+            "note-page",
+        ],
         Some(&visitor),
     );
     assert_eq!(envelope(&out)["error"]["code"], "not-found");
@@ -156,9 +177,38 @@ fn health_answers_without_requests() {
 }
 
 #[test]
+fn calls_for_other_methods_are_invalid_args() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = format!("https://www.xiaohongshu.com/explore/{ID}");
+    for method in ["userscript", "xhs-downloader", "nope"] {
+        let out = plugin(
+            &[
+                "fetch",
+                &input,
+                "--out",
+                dir.path().to_str().unwrap(),
+                "--method",
+                method,
+            ],
+            None,
+        );
+        assert_eq!(out.status.code(), Some(1), "{method}");
+        assert_eq!(envelope(&out)["error"]["code"], "invalid-args", "{method}");
+    }
+    let out = plugin(&["sources", "--method", "note-page"], None);
+    assert_eq!(envelope(&out)["error"]["code"], "invalid-args");
+}
+
+#[test]
 fn usage_errors_exit_2() {
     for args in [
         &["fetch"][..],
+        &[
+            "fetch",
+            "https://www.xiaohongshu.com/explore/1",
+            "--out",
+            "/o",
+        ][..],
         &["list", "x"][..],
         &["health", "--x"][..],
         &[][..],
@@ -187,12 +237,28 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let found = usuyo_plugin::discover(&tmp.path().join("plugins")).unwrap();
     assert!(found.rejected.is_empty(), "{:?}", found.rejected);
     assert_eq!(found.fetch.len(), 1);
-    // 访客身份写在 `visitors` 里、只给 fetch，不是账号站点，也没有手填的设置
+    // 访客身份写在 `visitors` 里、只给笔记页那种方法，不是账号站点，也没有手填的设置
     let spec = &found.fetch[0].spec;
     assert!(spec.sites.is_empty());
     assert_eq!(spec.visitors[0].site, "www.xiaohongshu.com");
-    let fetch = spec.capabilities.fetch.as_ref().unwrap();
-    assert_eq!(fetch.uses.visitors, ["www.xiaohongshu.com"]);
+    // routes.md 第 3 节的每一行；做了的是笔记页和浏览器脚本
+    let ids: Vec<&str> = spec.methods.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "note-page",
+            "userscript",
+            "iphone",
+            "android",
+            "xhs-downloader",
+            "rsshub"
+        ]
+    );
+    let built: Vec<&str> = spec.built().map(|m| m.id.as_str()).collect();
+    assert_eq!(built, ["note-page", "userscript"]);
+    let note = spec.method("note-page").unwrap();
+    assert_eq!(note.visitors, ["www.xiaohongshu.com"]);
+    assert!(note.sites.is_empty() && note.capabilities.fetch.is_some());
     assert!(found.fetch[0].header.settings.is_empty());
     let host = usuyo_plugin::PluginHost::new(
         usuyo_plugin::HostConfig {

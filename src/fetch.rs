@@ -143,9 +143,13 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
             }
             500..=599 => return Err(Error::Network(format!("note page answered HTTP {status}"))),
             _ => {
-                return Err(Error::UpstreamChanged(format!(
-                    "note page answered HTTP {status}"
-                )));
+                let head = http
+                    .read_capped(&mut response, PAGE_BYTES)
+                    .unwrap_or_default();
+                return Err(
+                    Error::UpstreamChanged(format!("note page answered HTTP {status}"))
+                        .answered(&String::from_utf8_lossy(&head)),
+                );
             }
         }
         let content_type = http::header(&response, "content-type")
@@ -153,28 +157,35 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
             .to_ascii_lowercase();
         let body = http.read_capped(&mut response, PAGE_BYTES)?;
         let text = String::from_utf8_lossy(&body);
-        if content_type.contains("json") || text.trim_start().starts_with('{') {
-            return Err(risk_json(&text));
-        }
-        if !state::has_state(&text) {
-            return Err(if looks_like_verification(&text) {
-                Error::Blocked("note page is a verification page".into())
-            } else if status == 404 {
-                Error::NotFound("note page answered HTTP 404".into())
-            } else {
-                Error::State(StateError::NoState)
-            });
-        }
-        let parsed = state::extract(&text)?;
-        return match state::note(&parsed, &note.id) {
-            Ok(n) => Ok(Page { note: n, status }),
-            // 页面结构在、这篇的内容没给：和被送回首页一样，是要访客 cookie 的样子
-            Err(StateError::Absent(id)) => Err(Error::VisitorRequired {
-                at: format!("a page without content for note {id}"),
-                cookie_tried: cookie.is_some(),
-            }),
-            Err(other) => Err(other.into()),
+        // 页面不是能用的笔记：错误带着页面的开头走（要访客身份的不带，调用方要认出它再带 cookie 试一次）
+        let page = || -> Result<Page, Error> {
+            if content_type.contains("json") || text.trim_start().starts_with('{') {
+                return Err(risk_json(&text));
+            }
+            if !state::has_state(&text) {
+                return Err(if looks_like_verification(&text) {
+                    Error::Blocked("note page is a verification page".into())
+                } else if status == 404 {
+                    Error::NotFound("note page answered HTTP 404".into())
+                } else {
+                    Error::State(StateError::NoState)
+                });
+            }
+            let parsed = state::extract(&text)?;
+            match state::note(&parsed, &note.id) {
+                Ok(n) => Ok(Page { note: n, status }),
+                // 页面结构在、这篇的内容没给：和被送回首页一样，是要访客 cookie 的样子
+                Err(StateError::Absent(id)) => Err(Error::VisitorRequired {
+                    at: format!("a page without content for note {id}"),
+                    cookie_tried: cookie.is_some(),
+                }),
+                Err(other) => Err(other.into()),
+            }
         };
+        return page().map_err(|e| match e {
+            e @ Error::VisitorRequired { .. } => e,
+            e => e.answered(&text),
+        });
     }
     Err(Error::UpstreamChanged(format!(
         "note page redirected more than {PAGE_HOPS} times"
