@@ -48,6 +48,7 @@ methods:
     login: required
     account: own-browser
     delivers: links
+    script: userscript/usuyo-xhs-saved.user.js
     risk:
       text: 网页对采集类扩展弹「有害插件」；只截获、不发请求的脚本没有处罚报告
       source: {label: "XHS-Downloader #283", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/283"}
